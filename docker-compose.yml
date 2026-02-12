@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  # PostgreSQL — TargetDB + ProfileDB
+  postgres:
+    image: postgres:16-alpine
+    container_name: tutor-postgres
+    environment:
+      POSTGRES_USER: tutor
+      POSTGRES_PASSWORD: tutor_pass
+      POSTGRES_DB: tutor_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tutor -d tutor_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis — StateDB (session state)
+  redis:
+    image: redis:7-alpine
+    container_name: tutor-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
