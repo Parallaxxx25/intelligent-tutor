@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     CODE_EXEC_TIMEOUT: int = 5  # seconds
     CODE_EXEC_MAX_MEMORY_MB: int = 256
 
+    # -- RAG (Phase 2) -------------------------------------------------------
+    CHROMA_PERSIST_DIR: str = ""  # empty = in-memory (ephemeral)
+    EMBEDDING_MODEL: str = "models/text-embedding-004"
+
+    # -- Guardrails (Phase 2) ------------------------------------------------
+    GUARDRAIL_MAX_QUERY_LENGTH: int = 5000
+    GUARDRAIL_MAX_RESPONSE_LENGTH: int = 3000
+    DEFAULT_PIPELINE_MODE: str = "deterministic"  # "deterministic" or "llm"
+
     # -- Application ---------------------------------------------------------
     ENV: str = "development"
     DEBUG: bool = True

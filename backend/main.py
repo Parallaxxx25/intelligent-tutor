@@ -44,6 +44,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting Intelligent Tutoring System...")
     await init_db()
     logger.info("Database initialised.")
+
+    # Initialize RAG knowledge base (Phase 2)
+    try:
+        from backend.rag.retriever import initialize_knowledge_base
+        initialize_knowledge_base()
+        logger.info("RAG knowledge base initialised.")
+    except Exception as e:
+        logger.warning("RAG init failed (non-fatal): %s", e)
+
     yield
     await close_db()
     logger.info("Application shutdown complete.")

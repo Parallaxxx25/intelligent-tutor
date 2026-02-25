@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.agents.supervisor import run_pipeline_deterministic
+from backend.agents.supervisor import run_pipeline_deterministic, run_pipeline_llm
+from backend.config import get_settings
 from backend.db.database import get_db
 from backend.db.models import (
     InteractionHistory,
@@ -42,6 +44,12 @@ from backend.db.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Tutoring API"])
+
+
+class PipelineMode(str, Enum):
+    """Pipeline execution mode."""
+    DETERMINISTIC = "deterministic"
+    LLM = "llm"
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +117,10 @@ async def get_problem(
 async def submit_code(
     body: CodeSubmission,
     db: AsyncSession = Depends(get_db),
+    mode: PipelineMode = Query(
+        default=None,
+        description="Pipeline mode: 'deterministic' (rule-based) or 'llm' (Gemini-powered).",
+    ),
 ) -> Any:
     """
     Submit student code to the tutoring pipeline.
@@ -162,19 +174,39 @@ async def submit_code(
         for tc in problem.test_cases
     ]
 
-    # --- Run pipeline ---------------------------------------------------
+    # --- Resolve pipeline mode -----------------------------------------
+    settings = get_settings()
+    effective_mode = mode or PipelineMode(settings.DEFAULT_PIPELINE_MODE)
+
     logger.info(
-        "Running pipeline: user=%d, problem=%d, attempt=%d",
-        body.user_id, body.problem_id, attempt_count,
+        "Running pipeline (%s): user=%d, problem=%d, attempt=%d",
+        effective_mode.value, body.user_id, body.problem_id, attempt_count,
     )
 
-    pipeline_result = run_pipeline_deterministic(
-        submission=body,
-        problem_description=problem.description,
-        problem_topic=problem.topic,
-        test_cases=test_cases_for_runner,
-        attempt_count=attempt_count,
-    )
+    # --- Run pipeline ---------------------------------------------------
+    if effective_mode == PipelineMode.LLM:
+        # Extract gold-standard query for output guardrails
+        gold_standard = ""
+        if problem.test_cases:
+            gold_standard = problem.test_cases[0].input_data or ""
+
+        pipeline_result = run_pipeline_llm(
+            submission=body,
+            problem_description=problem.description,
+            problem_topic=problem.topic,
+            test_cases=test_cases_for_runner,
+            attempt_count=attempt_count,
+            gold_standard_query=gold_standard,
+            schema_info=None,  # TODO: extract from problem metadata
+        )
+    else:
+        pipeline_result = run_pipeline_deterministic(
+            submission=body,
+            problem_description=problem.description,
+            problem_topic=problem.topic,
+            test_cases=test_cases_for_runner,
+            attempt_count=attempt_count,
+        )
 
     # --- Log interaction ------------------------------------------------
     interaction = InteractionHistory(

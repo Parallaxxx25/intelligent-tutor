@@ -149,7 +149,7 @@ intelligent-tutor/
 pytest tests/test_tools.py -v
 
 # API tests (requires PostgreSQL)
-pytest tests/test_api.py -v
+pytest tests/test_tools.py -v
 
 # All tests
 pytest -v
