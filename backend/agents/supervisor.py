@@ -21,7 +21,6 @@ from typing import Any
 from crewai import Crew, Process, Task
 
 from backend.agents.diagnostician import create_diagnostician_agent
-from backend.agents.grader import create_grader_agent
 from backend.agents.tutor import create_tutor_agent
 from backend.db.schemas import (
     CodeSubmission,
@@ -33,7 +32,6 @@ from backend.db.schemas import (
     TestCaseResult,
 )
 from backend.prompts.diagnostician_prompts import DIAGNOSTICIAN_TASK_TEMPLATE
-from backend.prompts.grader_prompts import GRADER_TASK_TEMPLATE
 from backend.prompts.tutor_prompts import TUTOR_TASK_TEMPLATE
 from backend.tools.error_classifier import classify_sql_error
 from backend.tools.hint_generator import generate_sql_hint
@@ -193,17 +191,16 @@ class TutoringCrew:
     """
     CrewAI-based SQL tutoring pipeline.
 
-    Orchestrates Grader → Diagnostician → Tutor in sequential process.
-    This is the LLM-powered path — each agent reasons about the SQL
-    inputs before using its tools.
+    Orchestrates Diagnostician → Tutor in sequential process.
+    This is the LLM-powered path — grading is run deterministically, 
+    and then agents reason about the SQL inputs before using their tools.
 
     Usage:
         crew = TutoringCrew()
-        result = crew.kickoff(submission, problem_description, test_cases, attempt_count)
+        result = crew.kickoff(submission, problem_description, problem_topic, test_cases_json, attempt_count)
     """
 
     def __init__(self) -> None:
-        self.grader = create_grader_agent()
         self.diagnostician = create_diagnostician_agent()
         self.tutor = create_tutor_agent()
 
@@ -221,24 +218,25 @@ class TutoringCrew:
         Returns:
             Raw crew output string (parsed by the API layer).
         """
-        # --- Define tasks ------------------------------------------------
-        grading_task = Task(
-            description=GRADER_TASK_TEMPLATE.format(
-                problem_description=problem_description,
-                student_code=submission.code,
-                test_cases_json=test_cases_json,
-            ),
-            expected_output=(
-                "A structured grading report with pass/fail for each test, "
-                "column/row comparison, overall score, and any error messages."
-            ),
-            agent=self.grader,
-        )
+        # --- Run deterministic grading first --------------------------------
+        test_cases = json.loads(test_cases_json)
+        sql_test_cases = [
+            {
+                "test_case_id": tc.get("test_case_id", idx),
+                "expected_query": tc["input_data"],  # gold-standard query stored in input_data
+                "check_order": tc.get("check_order", True),
+            }
+            for idx, tc in enumerate(test_cases)
+        ]
+        
+        grading_raw = run_sql_tests(submission.code, sql_test_cases)
+        grading_results_str = json.dumps(grading_raw, indent=2)
 
+        # --- Define tasks ------------------------------------------------
         diagnosis_task = Task(
             description=DIAGNOSTICIAN_TASK_TEMPLATE.format(
                 student_code=submission.code,
-                grading_results="{grading_task_output}",
+                grading_results=grading_results_str,
                 attempt_count=attempt_count,
                 problem_topic=problem_topic,
             ),
@@ -248,7 +246,6 @@ class TutoringCrew:
                 "pedagogical_rationale."
             ),
             agent=self.diagnostician,
-            context=[grading_task],
         )
 
         tutoring_task = Task(
@@ -271,10 +268,12 @@ class TutoringCrew:
 
         # --- Create & run crew ------------------------------------------
         crew = Crew(
-            agents=[self.grader, self.diagnostician, self.tutor],
-            tasks=[grading_task, diagnosis_task, tutoring_task],
+            agents=[self.diagnostician, self.tutor],
+            tasks=[diagnosis_task, tutoring_task],
             process=Process.sequential,
+            memory=False,
             verbose=True,
+            cache=True
         )
 
         logger.info("Kicking off TutoringCrew for problem %d", submission.problem_id)
