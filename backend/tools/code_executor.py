@@ -16,7 +16,7 @@ import logging
 import re
 from typing import Any, Type
 
-from crewai.tools import BaseTool
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
@@ -47,7 +47,7 @@ MAX_RESULT_ROWS = 200
 # ---------------------------------------------------------------------------
 
 class SQLExecutorInput(BaseModel):
-    """Input schema for the SQLExecutorTool."""
+    """Input schema for the sql_executor tool."""
 
     query: str = Field(..., description="The SQL query to execute")
     database_url: str = Field(
@@ -57,45 +57,37 @@ class SQLExecutorInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tool  (CrewAI BaseTool)
+# LangChain Tool (replaces CrewAI BaseTool)
 # ---------------------------------------------------------------------------
 
-class SQLExecutorTool(BaseTool):
-    """Execute a student SQL query against the target database and return results."""
+@tool(args_schema=SQLExecutorInput)
+def sql_executor_tool(query: str, database_url: str = "") -> str:
+    """Executes a SQL SELECT query against the tutoring target database
+    in a read-only transaction with a timeout. Returns the column names
+    and result rows or any error messages."""
+    result = execute_sql(query, database_url or None)
 
-    name: str = "sql_executor"
-    description: str = (
-        "Executes a SQL SELECT query against the tutoring target database "
-        "in a read-only transaction with a timeout. Returns the column names "
-        "and result rows or any error messages."
-    )
-    args_schema: Type[BaseModel] = SQLExecutorInput
-
-    def _run(self, query: str, database_url: str = "") -> str:
-        """Execute the SQL query and return a formatted result string."""
-        result = execute_sql(query, database_url or None)
-
-        if not result["success"]:
-            return (
-                f"SQL_ERROR: {result['error_type']}\n"
-                f"MESSAGE: {result['error_message']}\n"
-            )
-
-        # Format as a simple table
-        columns = result["columns"]
-        rows = result["rows"]
-        header = " | ".join(columns)
-        separator = "-+-".join("-" * len(c) for c in columns)
-        body = "\n".join(
-            " | ".join(str(v) for v in row) for row in rows
-        )
+    if not result["success"]:
         return (
-            f"SUCCESS\n"
-            f"ROWS_RETURNED: {len(rows)}\n"
-            f"EXECUTION_TIME_MS: {result['execution_time_ms']}\n"
-            f"COLUMNS: {columns}\n\n"
-            f"{header}\n{separator}\n{body}"
+            f"SQL_ERROR: {result['error_type']}\n"
+            f"MESSAGE: {result['error_message']}\n"
         )
+
+    # Format as a simple table
+    columns = result["columns"]
+    rows = result["rows"]
+    header = " | ".join(columns)
+    separator = "-+-".join("-" * len(c) for c in columns)
+    body = "\n".join(
+        " | ".join(str(v) for v in row) for row in rows
+    )
+    return (
+        f"SUCCESS\n"
+        f"ROWS_RETURNED: {len(rows)}\n"
+        f"EXECUTION_TIME_MS: {result['execution_time_ms']}\n"
+        f"COLUMNS: {columns}\n\n"
+        f"{header}\n{separator}\n{body}"
+    )
 
 
 # ---------------------------------------------------------------------------

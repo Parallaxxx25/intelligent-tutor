@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Type
 
-from crewai.tools import BaseTool
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class SQLHintGeneratorInput(BaseModel):
-    """Input schema for the SQLHintGeneratorTool."""
+    """Input schema for the sql_hint_generator tool."""
 
     error_type: str = Field(
         ..., description="SQL error category (e.g. syntax_error, join_error, logic_error)"
@@ -52,45 +52,37 @@ class SQLHintGeneratorInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tool
+# LangChain Tool (replaces CrewAI BaseTool)
 # ---------------------------------------------------------------------------
 
-class SQLHintGeneratorTool(BaseTool):
-    """Generate a scaffolded pedagogical hint for SQL queries."""
-
-    name: str = "sql_hint_generator"
-    description: str = (
-        "Generates a multi-level pedagogical hint for a SQL student based on "
-        "their error type, query, and number of attempts. "
-        "Level 1 = attention nudge, Level 2 = SQL concept explanation, "
-        "Level 3 = similar SQL example, Level 4 = guided SQL template."
+@tool(args_schema=SQLHintGeneratorInput)
+def sql_hint_generator_tool(
+    error_type: str,
+    error_message: str,
+    student_query: str,
+    attempt_count: int = 1,
+    problem_description: str = "",
+    problematic_clause: str | None = None,
+) -> str:
+    """Generate a multi-level pedagogical hint for a SQL student based on
+    their error type, query, and number of attempts.
+    Level 1 = attention nudge, Level 2 = SQL concept explanation,
+    Level 3 = similar SQL example, Level 4 = guided SQL template."""
+    result = generate_sql_hint(
+        error_type=error_type,
+        error_message=error_message,
+        student_query=student_query,
+        attempt_count=attempt_count,
+        problem_description=problem_description,
+        problematic_clause=problematic_clause,
     )
-    args_schema: Type[BaseModel] = SQLHintGeneratorInput
-
-    def _run(
-        self,
-        error_type: str,
-        error_message: str,
-        student_query: str,
-        attempt_count: int = 1,
-        problem_description: str = "",
-        problematic_clause: str | None = None,
-    ) -> str:
-        result = generate_sql_hint(
-            error_type=error_type,
-            error_message=error_message,
-            student_query=student_query,
-            attempt_count=attempt_count,
-            problem_description=problem_description,
-            problematic_clause=problematic_clause,
-        )
-        return (
-            f"HINT_LEVEL: {result['hint_level']}\n"
-            f"HINT_TYPE: {result['hint_type']}\n"
-            f"HINT_TEXT: {result['hint_text']}\n"
-            f"RATIONALE: {result['pedagogical_rationale']}\n"
-            f"FOLLOW_UP: {result.get('follow_up_question', '')}"
-        )
+    return (
+        f"HINT_LEVEL: {result['hint_level']}\n"
+        f"HINT_TYPE: {result['hint_type']}\n"
+        f"HINT_TEXT: {result['hint_text']}\n"
+        f"RATIONALE: {result['pedagogical_rationale']}\n"
+        f"FOLLOW_UP: {result.get('follow_up_question', '')}"
+    )
 
 
 # ---------------------------------------------------------------------------

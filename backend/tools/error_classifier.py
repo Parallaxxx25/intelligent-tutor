@@ -23,7 +23,7 @@ import logging
 import re
 from typing import Type
 
-from crewai.tools import BaseTool
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class SQLErrorClassifierInput(BaseModel):
-    """Input schema for the SQLErrorClassifierTool."""
+    """Input schema for the sql_error_classifier tool."""
 
     error_message: str = Field(
         default="", description="Error message from SQL execution"
@@ -122,43 +122,34 @@ _SUBQUERY_PATTERNS = [
 
 
 # ---------------------------------------------------------------------------
-# Tool
+# LangChain Tool (replaces CrewAI BaseTool)
 # ---------------------------------------------------------------------------
 
-class SQLErrorClassifierTool(BaseTool):
-    """Classify SQL query errors into a pedagogical taxonomy."""
-
-    name: str = "sql_error_classifier"
-    description: str = (
-        "Classifies SQL query errors into pedagogical categories: "
-        "syntax_error, column_error, relation_error, join_error, "
-        "aggregation_error, subquery_error, type_error, logic_error, "
-        "ambiguity_error, timeout_error, or no_error."
+@tool(args_schema=SQLErrorClassifierInput)
+def sql_error_classifier_tool(
+    error_message: str = "",
+    error_type_hint: str = "",
+    all_tests_passed: bool = True,
+    failed_test_details: str = "",
+    student_query: str = "",
+) -> str:
+    """Classify SQL query errors into pedagogical categories:
+    syntax_error, column_error, relation_error, join_error,
+    aggregation_error, subquery_error, type_error, logic_error,
+    ambiguity_error, timeout_error, or no_error."""
+    result = classify_sql_error(
+        error_message=error_message,
+        error_type_hint=error_type_hint,
+        all_tests_passed=all_tests_passed,
+        failed_test_details=failed_test_details,
+        student_query=student_query,
     )
-    args_schema: Type[BaseModel] = SQLErrorClassifierInput
-
-    def _run(
-        self,
-        error_message: str = "",
-        error_type_hint: str = "",
-        all_tests_passed: bool = True,
-        failed_test_details: str = "",
-        student_query: str = "",
-    ) -> str:
-        """Classify the error and return a structured result string."""
-        result = classify_sql_error(
-            error_message=error_message,
-            error_type_hint=error_type_hint,
-            all_tests_passed=all_tests_passed,
-            failed_test_details=failed_test_details,
-            student_query=student_query,
-        )
-        return (
-            f"ERROR_TYPE: {result.error_type}\n"
-            f"ERROR_MESSAGE: {result.error_message}\n"
-            f"PROBLEMATIC_CLAUSE: {result.problematic_clause}\n"
-            f"SEVERITY: {result.severity}"
-        )
+    return (
+        f"ERROR_TYPE: {result.error_type}\n"
+        f"ERROR_MESSAGE: {result.error_message}\n"
+        f"PROBLEMATIC_CLAUSE: {result.problematic_clause}\n"
+        f"SEVERITY: {result.severity}"
+    )
 
 
 # ---------------------------------------------------------------------------

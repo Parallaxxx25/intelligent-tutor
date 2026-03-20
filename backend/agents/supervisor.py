@@ -1,13 +1,13 @@
 """
-Supervisor / Crew Coordinator — Orchestrates the SQL tutoring pipeline.
+Supervisor / Graph Coordinator — Orchestrates the SQL tutoring pipeline.
 
 Manages the sequential flow:
     Grader → Diagnostician → Tutor
 
-The Supervisor creates a CrewAI Crew with Process.sequential and
-provides the ``run_pipeline`` entry point used by the API layer.
+The Supervisor builds a LangGraph StateGraph with sequential edges and
+provides the ``run_pipeline`` entry points used by the API layer.
 
-Version: 2026-02-12 (SQL-focused)
+Version: 2026-03-20 (LangGraph migration)
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypedDict
 
-from crewai import Crew, Process, Task
+from langgraph.graph import END, StateGraph
 
-from backend.agents.diagnostician import create_diagnostician_agent
-from backend.agents.tutor import create_tutor_agent
+from backend.agents.diagnostician import diagnose_errors
+from backend.agents.tutor import generate_hint
 from backend.db.schemas import (
     CodeSubmission,
     DiagnosisResult,
@@ -184,104 +184,50 @@ def run_pipeline_deterministic(
 
 
 # ---------------------------------------------------------------------------
-# CrewAI pipeline (LLM-powered, for Phase 2+)
+# LangGraph pipeline (replaces CrewAI, for Phase 2+)
 # ---------------------------------------------------------------------------
 
-class TutoringCrew:
+class PipelineState(TypedDict, total=False):
+    """Shared state passed through the LangGraph tutoring pipeline."""
+
+    student_code: str
+    grading_raw: dict
+    grading_results_str: str
+    attempt_count: int
+    problem_description: str
+    problem_topic: str
+    # Set by diagnostician node
+    classification: Any
+    diagnosis_error_type: str
+    diagnosis_error_message: str
+    diagnosis_problematic_clause: str | None
+    diagnosis_severity: str
+    recommended_hint_level: int
+    pedagogical_rationale: str
+    # Set by tutor node
+    hint_raw: dict
+    hint_text: str
+
+
+def build_tutoring_graph() -> Any:
     """
-    CrewAI-based SQL tutoring pipeline.
+    Build and compile the LangGraph tutoring pipeline.
 
-    Orchestrates Diagnostician → Tutor in sequential process.
-    This is the LLM-powered path — grading is run deterministically, 
-    and then agents reason about the SQL inputs before using their tools.
-
-    Usage:
-        crew = TutoringCrew()
-        result = crew.kickoff(submission, problem_description, problem_topic, test_cases_json, attempt_count)
+    Graph:  diagnose → tutor → END
     """
+    graph = StateGraph(PipelineState)
 
-    def __init__(self) -> None:
-        self.diagnostician = create_diagnostician_agent()
-        self.tutor = create_tutor_agent()
+    graph.add_node("diagnose", diagnose_errors)
+    graph.add_node("tutor", generate_hint)
 
-    def kickoff(
-        self,
-        submission: CodeSubmission,
-        problem_description: str,
-        problem_topic: str,
-        test_cases_json: str,
-        attempt_count: int = 1,
-    ) -> str:
-        """
-        Run the full CrewAI pipeline.
+    graph.set_entry_point("diagnose")
+    graph.add_edge("diagnose", "tutor")
+    graph.add_edge("tutor", END)
 
-        Returns:
-            Raw crew output string (parsed by the API layer).
-        """
-        # --- Run deterministic grading first --------------------------------
-        test_cases = json.loads(test_cases_json)
-        sql_test_cases = [
-            {
-                "test_case_id": tc.get("test_case_id", idx),
-                "expected_query": tc["input_data"],  # gold-standard query stored in input_data
-                "check_order": tc.get("check_order", True),
-            }
-            for idx, tc in enumerate(test_cases)
-        ]
-        
-        grading_raw = run_sql_tests(submission.code, sql_test_cases)
-        grading_results_str = json.dumps(grading_raw, indent=2)
-
-        # --- Define tasks ------------------------------------------------
-        diagnosis_task = Task(
-            description=DIAGNOSTICIAN_TASK_TEMPLATE.format(
-                student_code=submission.code,
-                grading_results=grading_results_str,
-                attempt_count=attempt_count,
-                problem_topic=problem_topic,
-            ),
-            expected_output=(
-                "An error classification with: error_type, error_message, "
-                "problematic_clause, severity, recommended_hint_level, and "
-                "pedagogical_rationale."
-            ),
-            agent=self.diagnostician,
-        )
-
-        tutoring_task = Task(
-            description=TUTOR_TASK_TEMPLATE.format(
-                student_code=submission.code,
-                error_type="{diagnosis_error_type}",
-                error_message="{diagnosis_error_message}",
-                hint_level="{recommended_hint_level}",
-                problematic_clause="{problematic_clause}",
-                problem_description=problem_description,
-                attempt_count=attempt_count,
-            ),
-            expected_output=(
-                "A pedagogical SQL hint with: hint_level, hint_text, hint_type, "
-                "pedagogical_rationale, and follow_up_question."
-            ),
-            agent=self.tutor,
-            context=[diagnosis_task],
-        )
-
-        # --- Create & run crew ------------------------------------------
-        crew = Crew(
-            agents=[self.diagnostician, self.tutor],
-            tasks=[diagnosis_task, tutoring_task],
-            process=Process.sequential,
-            memory=False,
-            verbose=True,
-            cache=True
-        )
-
-        logger.info("Kicking off TutoringCrew for problem %d", submission.problem_id)
-        result = crew.kickoff()
-        return str(result)
+    return graph.compile()
 
 
-def run_pipeline_crewai(
+def run_pipeline_langgraph(
     submission: CodeSubmission,
     problem_description: str,
     problem_topic: str,
@@ -289,10 +235,10 @@ def run_pipeline_crewai(
     attempt_count: int = 1,
 ) -> SubmissionResponse:
     """
-    Run the SQL tutoring pipeline using CrewAI.
+    Run the SQL tutoring pipeline using LangGraph.
     """
     start_time = time.perf_counter()
-    logger.info("CrewAI Pipeline step 1: Grading SQL submission")
+    logger.info("LangGraph Pipeline step 1: Grading SQL submission")
 
     sql_test_cases = [
         {
@@ -348,60 +294,42 @@ def run_pipeline_crewai(
             timestamp=datetime.now(timezone.utc),
         )
 
-    logger.info("CrewAI Pipeline step 2: Diagnosing and Tutoring with CrewAI")
+    logger.info("LangGraph Pipeline step 2: Diagnosing and Tutoring with LangGraph")
 
-    # Run rule-based classifier first to populate DiagnosisResult
-    failed_details = json.dumps(
-        [tr for tr in grading_raw["test_results"] if not tr["passed"]],
-        indent=2,
-        default=str,
-    )
-    classification = classify_sql_error(
-        error_message=grading_raw.get("student_error") or "",
-        error_type_hint=grading_raw.get("student_error_type") or "",
-        all_tests_passed=grading.passed,
-        failed_test_details=failed_details,
-        student_query=submission.code,
-    )
+    # Build and invoke the graph
+    compiled_graph = build_tutoring_graph()
+    graph_output = compiled_graph.invoke({
+        "student_code": submission.code,
+        "grading_raw": grading_raw,
+        "grading_results_str": json.dumps(grading_raw, indent=2),
+        "attempt_count": attempt_count,
+        "problem_description": problem_description,
+        "problem_topic": problem_topic,
+    })
 
-    if attempt_count <= 1:
-        rec_level = 1
-    elif attempt_count == 2:
-        rec_level = 2
-    elif attempt_count == 3:
-        rec_level = 3
-    else:
-        rec_level = 4
-
+    # Build structured response from graph output
     diagnosis = DiagnosisResult(
-        error_type=ErrorTypeEnum(classification.error_type),
-        error_message=classification.error_message,
-        problematic_clause=classification.problematic_clause,
-        severity=classification.severity,
-        recommended_hint_level=rec_level,
-        pedagogical_rationale=f"Rule-based diagnosis. Attempt {attempt_count}.",
+        error_type=ErrorTypeEnum(graph_output["diagnosis_error_type"]),
+        error_message=graph_output["diagnosis_error_message"],
+        problematic_clause=graph_output.get("diagnosis_problematic_clause"),
+        severity=graph_output.get("diagnosis_severity", "medium"),
+        recommended_hint_level=graph_output.get("recommended_hint_level", 1),
+        pedagogical_rationale=graph_output.get(
+            "pedagogical_rationale", "Generated by LangGraph pipeline."
+        ),
     )
 
-    crew = TutoringCrew()
-    test_cases_json = json.dumps(test_cases)
-    crew_output_str = crew.kickoff(
-        submission=submission,
-        problem_description=problem_description,
-        problem_topic=problem_topic,
-        test_cases_json=test_cases_json,
-        attempt_count=attempt_count,
-    )
-
+    hint_raw = graph_output.get("hint_raw", {})
     hint = HintResponse(
-        hint_level=rec_level,
-        hint_text=str(crew_output_str),
-        hint_type="text",
-        pedagogical_rationale="Generated by TutoringCrew",
-        follow_up_question=None,
+        hint_level=hint_raw.get("hint_level", graph_output.get("recommended_hint_level", 1)),
+        hint_text=graph_output.get("hint_text", str(graph_output)),
+        hint_type=hint_raw.get("hint_type", "text"),
+        pedagogical_rationale=hint_raw.get("pedagogical_rationale", "Generated by LangGraph pipeline."),
+        follow_up_question=hint_raw.get("follow_up_question"),
     )
 
     elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-    logger.info("CrewAI Pipeline complete in %dms", elapsed_ms)
+    logger.info("LangGraph Pipeline complete in %dms", elapsed_ms)
 
     return SubmissionResponse(
         submission_id=0,

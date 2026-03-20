@@ -17,7 +17,7 @@ import json
 import logging
 from typing import Any, Type
 
-from crewai.tools import BaseTool
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from backend.tools.code_executor import execute_sql
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class SQLTestRunnerInput(BaseModel):
-    """Input schema for the SQLTestRunnerTool."""
+    """Input schema for the sql_test_runner tool."""
 
     student_query: str = Field(..., description="The student's submitted SQL query")
     test_cases: str = Field(
@@ -45,29 +45,21 @@ class SQLTestRunnerInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tool
+# LangChain Tool (replaces CrewAI BaseTool)
 # ---------------------------------------------------------------------------
 
-class SQLTestRunnerTool(BaseTool):
-    """Run a student SQL query against test cases and compare results."""
+@tool(args_schema=SQLTestRunnerInput)
+def sql_test_runner_tool(student_query: str, test_cases: str) -> str:
+    """Executes the student's SQL query and compares its result set
+    against the expected result produced by a gold-standard query.
+    Returns per-test pass/fail and an overall score."""
+    try:
+        cases = json.loads(test_cases)
+    except json.JSONDecodeError as exc:
+        return f"ERROR: Could not parse test_cases JSON — {exc}"
 
-    name: str = "sql_test_runner"
-    description: str = (
-        "Executes the student's SQL query and compares its result set "
-        "against the expected result produced by a gold-standard query.  "
-        "Returns per-test pass/fail and an overall score."
-    )
-    args_schema: Type[BaseModel] = SQLTestRunnerInput
-
-    def _run(self, student_query: str, test_cases: str) -> str:
-        """Execute tests and return a structured result string."""
-        try:
-            cases = json.loads(test_cases)
-        except json.JSONDecodeError as exc:
-            return f"ERROR: Could not parse test_cases JSON — {exc}"
-
-        results = run_sql_tests(student_query, cases)
-        return json.dumps(results, indent=2, default=str)
+    results = run_sql_tests(student_query, cases)
+    return json.dumps(results, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------

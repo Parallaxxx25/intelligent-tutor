@@ -1,6 +1,6 @@
 # 🎓 Intelligent SQL Tutoring System
 
-A **multi-agent AI tutoring system** for personalized SQL education, built with CrewAI, FastAPI, and Google Gemini. Provides automated query grading, SQL error diagnosis, and adaptive pedagogical hints through a 4-level scaffolding system.
+A **multi-agent AI tutoring system** for personalized SQL education, built with LangGraph, FastAPI, and Google Gemini. Provides automated query grading, SQL error diagnosis, and adaptive pedagogical hints through a 4-level scaffolding system.
 
 > **Master's Thesis Project** — An experimental platform for studying the effectiveness of AI-driven pedagogical scaffolding in SQL education.
 
@@ -16,7 +16,7 @@ A **multi-agent AI tutoring system** for personalized SQL education, built with 
 │     │  Grader  │→ │ Diagnostician│→ │   Tutor   │       │
 │     │  Agent   │  │    Agent     │  │   Agent   │       │
 │     └──────────┘  └──────────────┘  └───────────┘       │
-│              CrewAI Sequential Pipeline                   │
+│              LangGraph StateGraph Pipeline                   │
 ├─────────────────────────────────────────────────────────┤
 │              Cognitive Layer (Orange)                     │
 │         Google Gemini  •  RAG  •  Guardrails             │
@@ -115,12 +115,12 @@ Visit [http://localhost:8000/docs](http://localhost:8000/docs) for the Swagger U
 ```
 intelligent-tutor/
 ├── backend/
-│   ├── agents/           # CrewAI agent definitions
+│   ├── agents/           # LangGraph agent node definitions
 │   │   ├── grader.py         # SQL query grader
 │   │   ├── diagnostician.py  # SQL error classifier
 │   │   ├── tutor.py          # Hint generator
 │   │   └── supervisor.py     # Pipeline orchestrator
-│   ├── tools/            # Custom CrewAI tools
+│   ├── tools/            # LangGraph tools
 │   │   ├── code_executor.py  # SQL executor (PostgreSQL)
 │   │   ├── test_runner.py    # SQL result-set comparison
 │   │   ├── error_classifier.py # SQL error taxonomy

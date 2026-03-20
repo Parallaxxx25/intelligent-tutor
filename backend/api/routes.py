@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.agents.supervisor import run_pipeline_crewai, run_pipeline_deterministic, run_pipeline_llm
+from backend.agents.supervisor import run_pipeline_langgraph, run_pipeline_deterministic, run_pipeline_llm
 from backend.config import get_settings
 from backend.db.database import get_db
 from backend.db.models import (
@@ -50,7 +50,7 @@ class PipelineMode(str, Enum):
     """Pipeline execution mode."""
     DETERMINISTIC = "deterministic"
     LLM = "llm"
-    CREWAI = "crewai"
+    LANGGRAPH = "langgraph"
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +200,8 @@ async def submit_code(
             gold_standard_query=gold_standard,
             schema_info=None,  # TODO: extract from problem metadata
         )
-    elif effective_mode == PipelineMode.CREWAI:
-        pipeline_result = run_pipeline_crewai(
+    elif effective_mode == PipelineMode.LANGGRAPH:
+        pipeline_result = run_pipeline_langgraph(
             submission=body,
             problem_description=problem.description,
             problem_topic=problem.topic,

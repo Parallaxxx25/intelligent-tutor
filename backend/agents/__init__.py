@@ -1,1 +1,1 @@
-# CrewAI agents package
+# LangGraph agent nodes package

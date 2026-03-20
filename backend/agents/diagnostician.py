@@ -1,5 +1,5 @@
 """
-Diagnostician Agent — SQL error classification and hint-level recommendation.
+Diagnostician Node — SQL error classification and hint-level recommendation.
 
 Responsible for:
   - Analysing SQL grading results
@@ -7,43 +7,89 @@ Responsible for:
   - Identifying the problematic SQL clause
   - Determining appropriate pedagogical intervention level
 
-Version: 2026-02-12 (SQL-focused)
+Version: 2026-03-20 (LangGraph migration)
 """
 
 from __future__ import annotations
 
-from crewai import Agent
+import json
+import logging
+from typing import Any
 
-from backend.config import get_settings
 from backend.prompts.diagnostician_prompts import DIAGNOSTICIAN_SYSTEM_PROMPT
-from backend.tools.error_classifier import SQLErrorClassifierTool
+from backend.tools.error_classifier import classify_sql_error
 
-_settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
-def create_diagnostician_agent() -> Agent:
-    """Factory function to create a configured Diagnostician Agent."""
-    return Agent(
-        role="SQL Error Diagnostician",
-        goal=(
-            "Classify SQL query errors into a pedagogical taxonomy and "
-            "determine the appropriate hint level based on error type, "
-            "the problematic SQL clause, and student attempt history."
-        ),
-        backstory=(
-            "You are a specialist in SQL education with deep knowledge "
-            "of common mistakes students make when learning SQL. You've spent "
-            "a decade studying how students misuse JOINs, forget GROUP BY rules, "
-            "and mix up WHERE vs HAVING. You can quickly identify not just WHAT "
-            "went wrong but WHY a student might have written that particular query. "
-            "You believe in scaffolded learning — giving just enough help at "
-            "the right time."
-        ),
-        tools=[SQLErrorClassifierTool()],
-        llm=_settings.LLM_MODEL,
-        verbose=True,
-        allow_delegation=False,
-        max_iter=5,
-        max_retry_limit=2,
-        system_template=DIAGNOSTICIAN_SYSTEM_PROMPT,
+def diagnose_errors(state: dict[str, Any]) -> dict[str, Any]:
+    """
+    LangGraph node: Diagnose SQL errors from grading results.
+
+    Reads from state:
+        - student_code: str
+        - grading_raw: dict
+        - attempt_count: int
+        - problem_topic: str
+
+    Returns state updates:
+        - classification: SQLClassificationResult
+        - diagnosis_error_type: str
+        - diagnosis_error_message: str
+        - diagnosis_problematic_clause: str | None
+        - diagnosis_severity: str
+        - recommended_hint_level: int
+        - pedagogical_rationale: str
+    """
+    student_code = state["student_code"]
+    grading_raw = state["grading_raw"]
+    attempt_count = state.get("attempt_count", 1)
+
+    # Prepare failed test details for classifier
+    failed_details = json.dumps(
+        [tr for tr in grading_raw["test_results"] if not tr["passed"]],
+        indent=2,
+        default=str,
     )
+
+    classification = classify_sql_error(
+        error_message=grading_raw.get("student_error") or "",
+        error_type_hint=grading_raw.get("student_error_type") or "",
+        all_tests_passed=grading_raw.get("passed", False),
+        failed_test_details=failed_details,
+        student_query=student_code,
+    )
+
+    # Determine hint level from attempt count
+    if attempt_count <= 1:
+        rec_level = 1
+    elif attempt_count == 2:
+        rec_level = 2
+    elif attempt_count == 3:
+        rec_level = 3
+    else:
+        rec_level = 4
+
+    rationale = (
+        f"Rule-based diagnosis. Attempt {attempt_count}. "
+        f"Error type is {classification.error_type} "
+        f"(clause: {classification.problematic_clause}) with "
+        f"{classification.severity} severity."
+    )
+
+    logger.info(
+        "Diagnostician node: %s (clause=%s, level=%d)",
+        classification.error_type,
+        classification.problematic_clause,
+        rec_level,
+    )
+
+    return {
+        "classification": classification,
+        "diagnosis_error_type": classification.error_type,
+        "diagnosis_error_message": classification.error_message,
+        "diagnosis_problematic_clause": classification.problematic_clause,
+        "diagnosis_severity": classification.severity,
+        "recommended_hint_level": rec_level,
+        "pedagogical_rationale": rationale,
+    }
