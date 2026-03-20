@@ -155,14 +155,6 @@ pytest tests/test_tools.py -v
 pytest -v
 ```
 
-## Development Phases
-
-- **Phase 1** ✅ Core Agent System — Grader, Diagnostician, Tutor with deterministic pipeline
-- **Phase 2** 🔲 Intelligence Layer — Gemini integration, RAG, LangSmith tracing
-- **Phase 3** 🔲 Persistence & State — Redis sessions, mastery tracking, personalization
-- **Phase 4** 🔲 Frontend — React UI with SQL editor
-- **Phase 5** 🔲 Evaluation — User study, metrics collection, thesis writing
-
 ## License
 
 This project is part of a master's thesis and is for academic use.
