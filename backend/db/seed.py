@@ -313,13 +313,73 @@ SEED_PROBLEMS: list[dict] = [
 # Seed functions
 # ---------------------------------------------------------------------------
 
+def split_sql_statements(sql: str) -> list[str]:
+    """Safely split SQL by semicolon, ignoring those inside quotes or comments."""
+    statements = []
+    in_string = False
+    in_single_line_comment = False
+    in_multi_line_comment = False
+    current_statement = []
+    
+    i = 0
+    length = len(sql)
+    while i < length:
+        char = sql[i]
+        next_char = sql[i+1] if i + 1 < length else ''
+        
+        if in_single_line_comment:
+            if char == '\n':
+                in_single_line_comment = False
+            current_statement.append(char)
+        elif in_multi_line_comment:
+            if char == '*' and next_char == '/':
+                in_multi_line_comment = False
+                current_statement.append('*/')
+                i += 1
+            else:
+                current_statement.append(char)
+        elif in_string:
+            if char == "'":
+                if next_char == "'":
+                    current_statement.append("''")
+                    i += 1
+                else:
+                    in_string = False
+                    current_statement.append(char)
+            else:
+                current_statement.append(char)
+        else:
+            if char == '-' and next_char == '-':
+                in_single_line_comment = True
+                current_statement.append('--')
+                i += 1
+            elif char == '/' and next_char == '*':
+                in_multi_line_comment = True
+                current_statement.append('/*')
+                i += 1
+            elif char == "'":
+                in_string = True
+                current_statement.append(char)
+            elif char == ';':
+                statements.append("".join(current_statement).strip())
+                current_statement = []
+            else:
+                current_statement.append(char)
+        i += 1
+        
+    last_stmt = "".join(current_statement).strip()
+    if last_stmt:
+        statements.append(last_stmt)
+        
+    return [s for s in statements if s]
+
+
 async def create_target_tables(session: AsyncSession) -> None:
     """Create reference tables (departments, employees, etc.) in the target DB."""
     logger.info("Creating target reference tables...")
-    for statement in TARGET_DB_SCHEMA.split(";"):
-        stmt = statement.strip()
-        if stmt:
-            await session.execute(text(stmt))
+    for statement in split_sql_statements(TARGET_DB_SCHEMA):
+        if statement:
+            await session.execute(text(statement))
     await session.commit()
     logger.info("Reference tables created.")
 
@@ -327,10 +387,9 @@ async def create_target_tables(session: AsyncSession) -> None:
 async def insert_reference_data(session: AsyncSession) -> None:
     """Insert sample data into reference tables."""
     logger.info("Inserting reference data...")
-    for statement in TARGET_DB_DATA.split(";"):
-        stmt = statement.strip()
-        if stmt:
-            await session.execute(text(stmt))
+    for statement in split_sql_statements(TARGET_DB_DATA):
+        if statement:
+            await session.execute(text(statement))
     await session.commit()
     logger.info("Reference data inserted.")
 
