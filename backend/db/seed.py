@@ -316,7 +316,10 @@ SEED_PROBLEMS: list[dict] = [
 async def create_target_tables(session: AsyncSession) -> None:
     """Create reference tables (departments, employees, etc.) in the target DB."""
     logger.info("Creating target reference tables...")
-    await session.execute(text(TARGET_DB_SCHEMA))
+    for statement in TARGET_DB_SCHEMA.split(";"):
+        stmt = statement.strip()
+        if stmt:
+            await session.execute(text(stmt))
     await session.commit()
     logger.info("Reference tables created.")
 
@@ -324,7 +327,10 @@ async def create_target_tables(session: AsyncSession) -> None:
 async def insert_reference_data(session: AsyncSession) -> None:
     """Insert sample data into reference tables."""
     logger.info("Inserting reference data...")
-    await session.execute(text(TARGET_DB_DATA))
+    for statement in TARGET_DB_DATA.split(";"):
+        stmt = statement.strip()
+        if stmt:
+            await session.execute(text(stmt))
     await session.commit()
     logger.info("Reference data inserted.")
 

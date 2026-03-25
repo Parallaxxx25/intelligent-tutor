@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # -- RAG (Phase 2) -------------------------------------------------------
     CHROMA_PERSIST_DIR: str = ""  # empty = in-memory (ephemeral)
-    EMBEDDING_MODEL: str = "models/text-embedding-004"
+    EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
     # -- Guardrails (Phase 2) ------------------------------------------------
     GUARDRAIL_MAX_QUERY_LENGTH: int = 5000

@@ -2,7 +2,7 @@
 RAG Retriever — ChromaDB-backed SQL knowledge base.
 
 Embeds SQL concept documents into a ChromaDB collection and provides
-semantic search via Google's text-embedding-004 model.
+semantic search via Google's gemini-embedding-001 model.
 
 Usage:
     from backend.rag.retriever import initialize_knowledge_base, retrieve_relevant_context
@@ -51,15 +51,14 @@ class GoogleEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
     so that tests and offline development still work.
     """
 
-    def __init__(self, model_name: str = "models/text-embedding-004") -> None:
+    def __init__(self, model_name: str = "models/gemini-embedding-001") -> None:
         self.model_name = model_name
-        self._genai = None
+        self._client = None
         try:
-            import google.generativeai as genai
+            from google import genai
             settings = get_settings()
             if settings.GOOGLE_API_KEY:
-                genai.configure(api_key=settings.GOOGLE_API_KEY)
-                self._genai = genai
+                self._client = genai.Client(api_key=settings.GOOGLE_API_KEY)
                 logger.info("Google embedding model configured: %s", model_name)
             else:
                 logger.warning("No GOOGLE_API_KEY — using fallback hash embeddings.")
@@ -68,14 +67,14 @@ class GoogleEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
-        if self._genai:
+        if self._client:
             try:
-                result = self._genai.embed_content(
+                response = self._client.models.embed_content(
                     model=self.model_name,
-                    content=input,
-                    task_type="retrieval_document",
+                    contents=input,
+                    config={"task_type": "RETRIEVAL_DOCUMENT"},
                 )
-                return result["embedding"]
+                return [embedding.values for embedding in response.embeddings]
             except Exception as e:
                 logger.warning("Embedding API failed (%s) — using fallback.", e)
 

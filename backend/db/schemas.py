@@ -16,35 +16,11 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------------------------
-# Enums (mirror db/models.py for API layer)
-# ---------------------------------------------------------------------------
-
-class DifficultyEnum(str, Enum):
-    EASY = "easy"
-    MEDIUM = "medium"
-    HARD = "hard"
-
-
-class LanguageEnum(str, Enum):
-    PYTHON = "python"
-    SQL = "sql"
-
-
-class ErrorTypeEnum(str, Enum):
-    """SQL-specific error taxonomy."""
-    SYNTAX_ERROR = "syntax_error"
-    COLUMN_ERROR = "column_error"
-    RELATION_ERROR = "relation_error"
-    JOIN_ERROR = "join_error"
-    AGGREGATION_ERROR = "aggregation_error"
-    SUBQUERY_ERROR = "subquery_error"
-    TYPE_ERROR = "type_error"
-    AMBIGUITY_ERROR = "ambiguity_error"
-    LOGIC_ERROR = "logic_error"
-    RUNTIME_ERROR = "runtime_error"
-    TIMEOUT_ERROR = "timeout_error"
-    NO_ERROR = "no_error"
+from backend.db.models import (
+    Difficulty as DifficultyEnum,
+    ErrorType as ErrorTypeEnum,
+    Language as LanguageEnum,
+)
 
 
 # ---------------------------------------------------------------------------
