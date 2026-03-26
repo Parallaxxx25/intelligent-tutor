@@ -34,16 +34,21 @@ async def setup_database():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
+    from sqlalchemy import text
     async with engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA IF EXISTS production CASCADE;"))
+        await conn.execute(text("DROP SCHEMA IF EXISTS sales CASCADE;"))
         await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def client():
     """Async HTTP client for FastAPI."""
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
+    ac = AsyncClient(transport=transport, base_url="http://test")
+    yield ac
+    await ac.aclose()
 
 
 @pytest_asyncio.fixture
@@ -121,17 +126,8 @@ class TestSubmitEndpoint:
             json={
                 "user_id": 1,
                 "problem_id": 1,
-                "code": (
-                    "def two_sum(nums, target):\n"
-                    "    seen = {}\n"
-                    "    for i, num in enumerate(nums):\n"
-                    "        complement = target - num\n"
-                    "        if complement in seen:\n"
-                    "            return [seen[complement], i]\n"
-                    "        seen[num] = i\n"
-                    "    return []\n"
-                ),
-                "language": "python",
+                "code": "SELECT first_name, last_name FROM sales.customers ORDER BY last_name;",
+                "language": "sql",
             },
         )
         assert response.status_code == 200
@@ -147,8 +143,8 @@ class TestSubmitEndpoint:
             json={
                 "user_id": 1,
                 "problem_id": 1,
-                "code": "def two_sum(nums, target):\n    return [0, 0]\n",
-                "language": "python",
+                "code": "SELECT first_name FROM sales.customers;",
+                "language": "sql",
             },
         )
         assert response.status_code == 200
@@ -165,8 +161,8 @@ class TestSubmitEndpoint:
             json={
                 "user_id": 999,
                 "problem_id": 1,
-                "code": "print('hello')",
-                "language": "python",
+                "code": "SELECT * FROM sales.customers;",
+                "language": "sql",
             },
         )
         assert response.status_code == 404
@@ -179,8 +175,8 @@ class TestSubmitEndpoint:
             json={
                 "user_id": 1,
                 "problem_id": 999,
-                "code": "print('hello')",
-                "language": "python",
+                "code": "SELECT * FROM sales.customers;",
+                "language": "sql",
             },
         )
         assert response.status_code == 404

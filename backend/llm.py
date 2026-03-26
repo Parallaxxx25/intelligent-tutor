@@ -17,7 +17,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-import google.generativeai as genai
+import google as genai
 
 from backend.config import get_settings
 
