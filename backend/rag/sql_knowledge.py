@@ -477,4 +477,36 @@ SQL_KNOWLEDGE_DOCS: list[dict[str, str]] = [
         ),
         "keywords": "execution order logical processing from where group having select distinct order limit",
     },
+    # ------------------------------------------------------------------
+    # 16. BikeStores Database Schema
+    # ------------------------------------------------------------------
+    {
+        "topic": "database_schema",
+        "title": "BikeStores Database Schema — Tables and Relationships",
+        "content": (
+            "The BikeStores database is the target environment for the SQL problems. It is divided into two schemas: `production` and `sales`.\n\n"
+            "## Schema: `production`\n"
+            "- **`production.brands`**: `brand_id` (PK), `brand_name`\n"
+            "- **`production.categories`**: `category_id` (PK), `category_name`\n"
+            "- **`production.products`**: `product_id` (PK), `product_name`, `brand_id` (FK), `category_id` (FK), `model_year`, `list_price`\n"
+            "- **`production.stocks`**: `store_id` (FK/PK), `product_id` (FK/PK), `quantity` (Composite PK)\n\n"
+            "## Schema: `sales`\n"
+            "- **`sales.stores`**: `store_id` (PK), `store_name`, `phone`, `email`, `street`, `city`, `state`, `zip_code`\n"
+            "- **`sales.staffs`**: `staff_id` (PK), `first_name`, `last_name`, `email`, `phone`, `active`, `store_id` (FK), `manager_id` (FK to staffs)\n"
+            "- **`sales.customers`**: `customer_id` (PK), `first_name`, `last_name`, `phone`, `email`, `street`, `city`, `state`, `zip_code`\n"
+            "- **`sales.orders`**: `order_id` (PK), `customer_id` (FK), `order_status`, `order_date`, `required_date`, `shipped_date`, `store_id` (FK), `staff_id` (FK)\n"
+            "- **`sales.order_items`**: `order_id` (FK/PK), `item_id` (PK), `product_id` (FK), `quantity`, `list_price`, `discount`\n\n"
+            "## Key Relationships\n"
+            "- `sales.orders` connects a `customer_id`, a `store_id`, and a `staff_id`.\n"
+            "- `sales.order_items` links an `order_id` to a `product_id` from `production.products`.\n"
+            "- `production.products` links to `production.categories` and `production.brands`.\n"
+            "- `production.stocks` links a `store_id` with a `product_id` to track inventory.\n"
+        ),
+        "common_mistakes": (
+            "- Forgetting to qualify tables with their schema prefixes (e.g., writing `products` instead of `production.products`).\n"
+            "- Confusing `sales.orders` and `sales.order_items` when calculating revenue.\n"
+            "- Using the wrong join key between tables or missing schema prefixes.\n"
+        ),
+        "keywords": "schema database tables columns foreign keys relationships production sales bikestores",
+    },
 ]
