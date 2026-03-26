@@ -4,15 +4,17 @@ Unit tests for custom SQL tutoring tools.
 Tests cover:
   - SQLExecutorTool: security validation (blocked DDL/DML)
   - SQLErrorClassifierTool: all SQL-specific categories
-  - SQLHintGeneratorTool: levels 1-4 + no_error case
+  - SQLHintGeneratorTool: levels 1-4 + no_error case (LLM mocked)
 
 Note: SQL execution tests (execute_sql, run_sql_tests) require a
 running PostgreSQL instance. Use `docker-compose up -d` first.
 
-Version: 2026-02-12 (SQL-focused)
+Version: 2026-03-27 (LLM-powered hint generator)
 """
 
 from __future__ import annotations
+
+from unittest.mock import patch
 
 import pytest
 
@@ -208,14 +210,47 @@ class TestSQLErrorClassifier:
 
 
 # ===================================================================
-# SQL Hint Generator
+# SQL Hint Generator (LLM-powered, with mock)
 # ===================================================================
 
+def _mock_llm_response(hint_level: int, error_type: str, **kwargs):
+    """Return a mock LLM structured response matching what the LLM would produce."""
+    responses = {
+        1: {
+            "hint_text": "Take a closer look at your JOIN clause. Can you spot what might be missing?",
+            "pedagogical_rationale": "Directing attention to the problematic clause.",
+            "follow_up_question": "What does your JOIN clause do exactly?",
+        },
+        2: {
+            "hint_text": "You have a GROUP BY / aggregation error. Every column in SELECT must be in GROUP BY or an aggregate.",
+            "pedagogical_rationale": "Explaining the SQL concept behind the error.",
+            "follow_up_question": "Which columns in your SELECT are not aggregated?",
+        },
+        3: {
+            "hint_text": (
+                "Here's a similar example:\n```sql\nSELECT dept, COUNT(*)\n"
+                "FROM staff\nGROUP BY dept;\n```\nNotice every non-aggregated column is in GROUP BY."
+            ),
+            "pedagogical_rationale": "Showing a concept example without revealing the solution.",
+            "follow_up_question": "Can you see how this pattern applies to your query?",
+        },
+        4: {
+            "hint_text": (
+                "Fill in the blanks:\n```sql\nSELECT ___\nFROM ___\n"
+                "WHERE ___\nGROUP BY ___\n```"
+            ),
+            "pedagogical_rationale": "Providing a scaffold template.",
+            "follow_up_question": "Which columns and tables do you need?",
+        },
+    }
+    return responses.get(hint_level, responses[1])
+
+
 class TestSQLHintGenerator:
-    """Tests for generate_sql_hint helper function."""
+    """Tests for generate_sql_hint helper function (LLM mocked)."""
 
     def test_no_error_congratulates(self) -> None:
-        """When query is correct, congratulate the student."""
+        """When query is correct, congratulate the student (no LLM needed)."""
         result = generate_sql_hint(
             error_type="no_error",
             error_message="All tests passed",
@@ -224,8 +259,16 @@ class TestSQLHintGenerator:
         assert result["hint_level"] == 0
         assert "great" in result["hint_text"].lower() or "correct" in result["hint_text"].lower()
 
-    def test_level_1_first_attempt(self) -> None:
-        """First attempt → Level 1 hint pointing to clause."""
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_level_1_first_attempt(self, mock_llm) -> None:
+        """First attempt → Level 1 hint via LLM."""
+        mock_llm.return_value = {
+            "hint_level": 1,
+            "hint_type": "text",
+            "hint_text": "Take a closer look at your JOIN clause. Something seems off.",
+            "pedagogical_rationale": "Directing attention to the problematic clause.",
+            "follow_up_question": "What does your JOIN clause do exactly?",
+        }
         result = generate_sql_hint(
             error_type="join_error",
             error_message="missing FROM-clause",
@@ -234,10 +277,18 @@ class TestSQLHintGenerator:
             problematic_clause="JOIN",
         )
         assert result["hint_level"] == 1
-        assert "JOIN" in result["hint_text"]
+        mock_llm.assert_called_once()
 
-    def test_level_2_second_attempt(self) -> None:
-        """Second attempt → Level 2 hint explaining the SQL concept."""
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_level_2_second_attempt(self, mock_llm) -> None:
+        """Second attempt → Level 2 hint via LLM."""
+        mock_llm.return_value = {
+            "hint_level": 2,
+            "hint_type": "text",
+            "hint_text": "You have a GROUP BY / aggregation error. Every column in SELECT must be in GROUP BY or an aggregate.",
+            "pedagogical_rationale": "Explaining the SQL concept.",
+            "follow_up_question": "Which columns need GROUP BY?",
+        }
         result = generate_sql_hint(
             error_type="aggregation_error",
             error_message="must appear in GROUP BY",
@@ -246,10 +297,18 @@ class TestSQLHintGenerator:
             problematic_clause="GROUP BY",
         )
         assert result["hint_level"] == 2
-        assert "group by" in result["hint_text"].lower()
+        mock_llm.assert_called_once()
 
-    def test_level_3_third_attempt(self) -> None:
-        """Third attempt → Level 3 hint with SQL example."""
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_level_3_third_attempt(self, mock_llm) -> None:
+        """Third attempt → Level 3 hint via LLM."""
+        mock_llm.return_value = {
+            "hint_level": 3,
+            "hint_type": "example",
+            "hint_text": "Here's a similar example with GROUP BY...",
+            "pedagogical_rationale": "Concept example.",
+            "follow_up_question": "See the pattern?",
+        }
         result = generate_sql_hint(
             error_type="logic_error",
             error_message="Wrong output",
@@ -258,9 +317,18 @@ class TestSQLHintGenerator:
         )
         assert result["hint_level"] == 3
         assert result["hint_type"] == "example"
+        mock_llm.assert_called_once()
 
-    def test_level_4_fourth_attempt(self) -> None:
-        """Fourth attempt → Level 4 hint with SQL template."""
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_level_4_fourth_attempt(self, mock_llm) -> None:
+        """Fourth attempt → Level 4 hint via LLM."""
+        mock_llm.return_value = {
+            "hint_level": 4,
+            "hint_type": "code_template",
+            "hint_text": "Fill in ___:\n```sql\nSELECT ___\nFROM ___\n```",
+            "pedagogical_rationale": "Scaffold template.",
+            "follow_up_question": "Start with SELECT.",
+        }
         result = generate_sql_hint(
             error_type="logic_error",
             error_message="Wrong output",
@@ -269,10 +337,34 @@ class TestSQLHintGenerator:
         )
         assert result["hint_level"] == 4
         assert result["hint_type"] == "code_template"
-        assert "___" in result["hint_text"]
+        mock_llm.assert_called_once()
 
-    def test_level_1_logic_error_no_clause(self) -> None:
-        """Logic error without specific clause still gives a useful hint."""
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_llm_fallback_on_error(self, mock_llm) -> None:
+        """When LLM fails, falls back to rule-based hints."""
+        mock_llm.side_effect = RuntimeError("LLM unavailable")
+        result = generate_sql_hint(
+            error_type="join_error",
+            error_message="missing FROM-clause",
+            student_query="SELECT * FROM orders, customers",
+            attempt_count=1,
+            problematic_clause="JOIN",
+        )
+        # Should still produce a valid hint via fallback
+        assert result["hint_level"] == 1
+        assert len(result["hint_text"]) > 20
+        assert "JOIN" in result["hint_text"]
+
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_level_1_logic_error_no_clause(self, mock_llm) -> None:
+        """Logic error without specific clause still gives a useful hint via LLM."""
+        mock_llm.return_value = {
+            "hint_level": 1,
+            "hint_type": "text",
+            "hint_text": "Your query runs but produces unexpected results. Try re-reading the problem statement.",
+            "pedagogical_rationale": "Attention nudge for logic error.",
+            "follow_up_question": "What condition might be missing?",
+        }
         result = generate_sql_hint(
             error_type="logic_error",
             error_message="Row count mismatch",
@@ -283,8 +375,16 @@ class TestSQLHintGenerator:
         assert result["hint_level"] == 1
         assert len(result["hint_text"]) > 20
 
-    def test_timeout_hint(self) -> None:
-        """Timeout error gives performance-related hint."""
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_timeout_hint(self, mock_llm) -> None:
+        """Timeout error gives performance-related hint via LLM."""
+        mock_llm.return_value = {
+            "hint_level": 1,
+            "hint_type": "text",
+            "hint_text": "Your query is taking too long. Check your FROM clause — you may have an accidental Cartesian product.",
+            "pedagogical_rationale": "Directing attention to performance issue.",
+            "follow_up_question": "How many tables are you joining?",
+        }
         result = generate_sql_hint(
             error_type="timeout_error",
             error_message="Statement timed out",
@@ -294,5 +394,33 @@ class TestSQLHintGenerator:
         )
         assert result["hint_level"] == 1
         lower_text = result["hint_text"].lower()
-        # When a specific clause is identified, the hint directs attention there
-        assert "from" in lower_text or "long" in lower_text or "timeout" in lower_text
+        assert "from" in lower_text or "long" in lower_text or "timeout" in lower_text or "cartesian" in lower_text
+
+    def test_fallback_level_2_content(self) -> None:
+        """Verify rule-based fallback produces correct level 2 content."""
+        from backend.tools.hint_generator import _generate_hint_rulebased
+        result = _generate_hint_rulebased(
+            error_type="aggregation_error",
+            error_message="must appear in GROUP BY",
+            student_query="SELECT name, COUNT(*) FROM employees",
+            hint_level=2,
+            problem_description="",
+            problematic_clause="GROUP BY",
+        )
+        assert result["hint_level"] == 2
+        assert "group by" in result["hint_text"].lower()
+
+    def test_fallback_level_4_has_blanks(self) -> None:
+        """Verify rule-based fallback level 4 has fill-in-the-blanks."""
+        from backend.tools.hint_generator import _generate_hint_rulebased
+        result = _generate_hint_rulebased(
+            error_type="logic_error",
+            error_message="Wrong output",
+            student_query="SELECT * FROM employees",
+            hint_level=4,
+            problem_description="",
+            problematic_clause=None,
+        )
+        assert result["hint_level"] == 4
+        assert result["hint_type"] == "code_template"
+        assert "___" in result["hint_text"]

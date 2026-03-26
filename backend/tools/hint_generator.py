@@ -1,22 +1,22 @@
 """
-SQL Hint Generator Tool — Multi-level pedagogical scaffolding for SQL.
+SQL Hint Generator Tool — LLM-powered pedagogical scaffolding for SQL.
 
-Generates hints at four scaffolding levels based on SQL error type,
-student attempt count, and the problematic SQL clause.
+Generates hints at four scaffolding levels via Gemini LLM,
+with a rule-based fallback if the LLM call fails.
 
 Levels:
-  1 (Attention)  : "Which clause seems suspicious?"
+  1 (Attention)  : Direct the student's attention to the suspicious clause
   2 (Category)   : Explain the SQL concept / error principle
   3 (Concept)    : Show a similar SQL example demonstrating the principle
   4 (Solution)   : Provide an incomplete SQL query with blanks
 
-Version: 2026-02-12  (SQL-focused rewrite)
+Version: 2026-03-27  (LLM-powered rewrite)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Type
+from typing import Any
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -52,7 +52,145 @@ class SQLHintGeneratorInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# LangChain Tool (replaces CrewAI BaseTool)
+# Hint-level escalation policy
+# ---------------------------------------------------------------------------
+
+LEVEL_DESCRIPTIONS = {
+    1: (
+        "Attention: Direct the student's attention to the problematic SQL clause "
+        "WITHOUT explaining the error or giving any solution. Ask a probing question."
+    ),
+    2: (
+        "Category: Explain what TYPE of SQL error they made and the general "
+        "principle behind it. Do NOT show example code or the solution."
+    ),
+    3: (
+        "Concept: Show a SIMILAR but DIFFERENT SQL example that demonstrates "
+        "the correct pattern. The example must use DIFFERENT table/column names "
+        "than the student's query. Do NOT reveal the student's specific fix."
+    ),
+    4: (
+        "Solution Scaffold: Provide an incomplete SQL template with blanks (___) "
+        "that the student must fill in. Include guiding comments for each blank. "
+        "Do NOT fill in the blanks yourself."
+    ),
+}
+
+HINT_TYPE_MAP = {1: "text", 2: "text", 3: "example", 4: "code_template"}
+
+
+# ---------------------------------------------------------------------------
+# LLM-based hint generation
+# ---------------------------------------------------------------------------
+
+def _determine_hint_level(attempt_count: int) -> int:
+    """Map attempt count to hint escalation level (1-4)."""
+    if attempt_count <= 1:
+        return 1
+    elif attempt_count == 2:
+        return 2
+    elif attempt_count == 3:
+        return 3
+    else:
+        return 4
+
+
+def _build_hint_prompt(
+    error_type: str,
+    error_message: str,
+    student_query: str,
+    hint_level: int,
+    problem_description: str,
+    problematic_clause: str | None,
+) -> str:
+    """Build the LLM prompt for hint generation."""
+    level_desc = LEVEL_DESCRIPTIONS.get(hint_level, LEVEL_DESCRIPTIONS[1])
+
+    prompt = (
+        f"You are a warm, encouraging SQL tutor helping a student debug their query.\n\n"
+        f"STUDENT QUERY:\n```sql\n{student_query}\n```\n\n"
+        f"ERROR TYPE: {error_type}\n"
+        f"ERROR MESSAGE: {error_message}\n"
+        f"PROBLEMATIC CLAUSE: {problematic_clause or 'unknown'}\n"
+    )
+
+    if problem_description:
+        prompt += f"PROBLEM DESCRIPTION: {problem_description}\n"
+
+    prompt += (
+        f"\nREQUIRED HINT LEVEL: {hint_level} — {level_desc}\n\n"
+        f"RULES:\n"
+        f"- NEVER reveal the complete SQL solution\n"
+        f"- Be encouraging — use positive framing\n"
+        f"- Keep the hint concise (2-4 sentences for levels 1-2, up to a short paragraph for 3-4)\n"
+        f"- Use SQL code blocks (```sql ... ```) for any query snippets\n"
+        f"- End with a follow-up question to promote reflection\n"
+        f"- Strictly follow the hint level description above\n\n"
+        f"Generate your response as a JSON object with exactly these keys:\n"
+        f'{{\n'
+        f'  "hint_text": "your hint message here",\n'
+        f'  "pedagogical_rationale": "brief explanation of why this hint is pedagogically appropriate",\n'
+        f'  "follow_up_question": "a reflective question for the student"\n'
+        f'}}\n'
+        f"Respond ONLY with the JSON object. No other text."
+    )
+
+    return prompt
+
+
+def _generate_hint_with_llm(
+    error_type: str,
+    error_message: str,
+    student_query: str,
+    hint_level: int,
+    problem_description: str,
+    problematic_clause: str | None,
+) -> dict[str, Any]:
+    """
+    Call Gemini LLM to generate a pedagogically appropriate hint.
+
+    Returns a dict with hint_level, hint_type, hint_text,
+    pedagogical_rationale, and follow_up_question.
+    """
+    from backend.llm import generate_structured_response
+
+    prompt = _build_hint_prompt(
+        error_type=error_type,
+        error_message=error_message,
+        student_query=student_query,
+        hint_level=hint_level,
+        problem_description=problem_description,
+        problematic_clause=problematic_clause,
+    )
+
+    response_schema = {
+        "hint_text": "string — the hint message",
+        "pedagogical_rationale": "string — why this hint is appropriate",
+        "follow_up_question": "string — a reflective question for the student",
+    }
+
+    llm_result = generate_structured_response(
+        prompt=prompt,
+        response_schema=response_schema,
+        system_instruction=(
+            "You are an encouraging SQL tutor. Never give away the full answer. "
+            "Match hint specificity strictly to the required level. "
+            "Respond ONLY with valid JSON."
+        ),
+        temperature=0.7,
+    )
+
+    return {
+        "hint_level": hint_level,
+        "hint_type": HINT_TYPE_MAP.get(hint_level, "text"),
+        "hint_text": llm_result.get("hint_text", ""),
+        "pedagogical_rationale": llm_result.get("pedagogical_rationale", ""),
+        "follow_up_question": llm_result.get("follow_up_question", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# LangChain Tool
 # ---------------------------------------------------------------------------
 
 @tool(args_schema=SQLHintGeneratorInput)
@@ -86,7 +224,7 @@ def sql_hint_generator_tool(
 
 
 # ---------------------------------------------------------------------------
-# Standalone helper
+# Public API — used by tutor node and supervisor
 # ---------------------------------------------------------------------------
 
 def generate_sql_hint(
@@ -98,7 +236,7 @@ def generate_sql_hint(
     problematic_clause: str | None = None,
 ) -> dict[str, str | int]:
     """
-    Determine hint level from attempt count and produce a SQL-specific hint.
+    Generate a hint using Gemini LLM with rule-based fallback.
 
     Hint-level escalation policy:
       - Attempt 1       → Level 1 (Attention)
@@ -106,16 +244,7 @@ def generate_sql_hint(
       - Attempt 3       → Level 3 (Concept)
       - Attempt 4+      → Level 4 (Solution scaffold)
     """
-    if attempt_count <= 1:
-        level = 1
-    elif attempt_count == 2:
-        level = 2
-    elif attempt_count == 3:
-        level = 3
-    else:
-        level = 4
-
-    # Correct answer — congratulate
+    # Correct answer — congratulate (no LLM needed)
     if error_type == "no_error":
         return {
             "hint_level": 0,
@@ -131,6 +260,51 @@ def generate_sql_hint(
             ),
         }
 
+    hint_level = _determine_hint_level(attempt_count)
+
+    # --- Primary path: LLM-generated hint ---
+    try:
+        result = _generate_hint_with_llm(
+            error_type=error_type,
+            error_message=error_message,
+            student_query=student_query,
+            hint_level=hint_level,
+            problem_description=problem_description,
+            problematic_clause=problematic_clause,
+        )
+        logger.info(
+            "LLM hint generated: level=%d, type=%s",
+            result["hint_level"],
+            result["hint_type"],
+        )
+        return result
+
+    except Exception as e:
+        logger.warning("LLM hint generation failed (%s) — using rule-based fallback.", e)
+        return _generate_hint_rulebased(
+            error_type=error_type,
+            error_message=error_message,
+            student_query=student_query,
+            hint_level=hint_level,
+            problem_description=problem_description,
+            problematic_clause=problematic_clause,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rule-based fallback (kept for resilience)
+# ---------------------------------------------------------------------------
+
+def _generate_hint_rulebased(
+    error_type: str,
+    error_message: str,
+    student_query: str,
+    hint_level: int,
+    problem_description: str,
+    problematic_clause: str | None,
+) -> dict[str, str | int]:
+    """Fallback rule-based hint generator (used when LLM is unavailable)."""
+
     generators = {
         1: _level_1_attention,
         2: _level_2_category,
@@ -138,7 +312,7 @@ def generate_sql_hint(
         4: _level_4_solution,
     }
 
-    return generators[level](
+    return generators[hint_level](
         error_type=error_type,
         error_message=error_message,
         student_query=student_query,
@@ -148,7 +322,7 @@ def generate_sql_hint(
 
 
 # ---------------------------------------------------------------------------
-# Level 1 — Attention
+# Level 1 — Attention (fallback)
 # ---------------------------------------------------------------------------
 
 def _level_1_attention(
@@ -201,7 +375,7 @@ def _level_1_attention(
 
 
 # ---------------------------------------------------------------------------
-# Level 2 — Category
+# Level 2 — Category (fallback)
 # ---------------------------------------------------------------------------
 
 def _level_2_category(
@@ -291,7 +465,7 @@ def _level_2_category(
 
 
 # ---------------------------------------------------------------------------
-# Level 3 — Concept (similar example)
+# Level 3 — Concept (fallback)
 # ---------------------------------------------------------------------------
 
 def _level_3_concept(
@@ -433,7 +607,7 @@ def _level_3_concept(
 
 
 # ---------------------------------------------------------------------------
-# Level 4 — Solution scaffold (fill-in-the-blanks)
+# Level 4 — Solution scaffold (fallback)
 # ---------------------------------------------------------------------------
 
 def _level_4_solution(
@@ -445,7 +619,6 @@ def _level_4_solution(
 ) -> dict[str, str | int]:
     """Provide an incomplete SQL template for the student to complete."""
 
-    # Build a generic SQL scaffold — the Tutor Agent can refine with LLM
     hint_text = (
         "Here's a template to help you structure your SQL query. "
         "Fill in the blanks (`___`) to complete it:\n\n"
