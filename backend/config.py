@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = ""  # empty = in-memory (ephemeral)
     EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
+    # -- Persistence & State (Phase 3) ----------------------------------------
+    REDIS_SESSION_TTL: int = 86400  # 24 hours in seconds
+    CHROMA_STUDENT_COLLECTION: str = "student_interactions"
+
     # -- Guardrails (Phase 2) ------------------------------------------------
     GUARDRAIL_MAX_QUERY_LENGTH: int = 5000
     GUARDRAIL_MAX_RESPONSE_LENGTH: int = 3000
