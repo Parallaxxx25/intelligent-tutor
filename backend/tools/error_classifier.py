@@ -83,7 +83,7 @@ _COLUMN_PATTERNS = [
 ]
 
 _RELATION_PATTERNS = [
-    re.compile(r'relation\s+"?\w+"?\s+does not exist', re.IGNORECASE),
+    re.compile(r'relation\s+"?[\w.]+"?\s+does not exist', re.IGNORECASE),
     re.compile(r"table .+ doesn.t exist", re.IGNORECASE),
     re.compile(r"unknown table", re.IGNORECASE),
 ]

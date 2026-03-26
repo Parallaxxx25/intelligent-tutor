@@ -73,6 +73,7 @@ class ErrorType(str, enum.Enum):
     LOGIC_ERROR = "logic_error"
     RUNTIME_ERROR = "runtime_error"
     TIMEOUT_ERROR = "timeout_error"
+    SECURITY_VIOLATION = "security_violation"
     NO_ERROR = "no_error"
 
 
