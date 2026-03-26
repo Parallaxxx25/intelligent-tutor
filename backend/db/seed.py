@@ -45,6 +45,7 @@ import re
 _schema_path = Path(__file__).resolve().parents[2] / "SQL-Server-Sample-Database" / "BikeStores Sample Database - create objects.sql"
 _schema_sql = _schema_path.read_text(encoding="utf-8")
 _schema_sql = _schema_sql.replace("INT IDENTITY (1, 1)", "SERIAL")
+_schema_sql = _schema_sql.replace("CREATE SCHEMA ", "CREATE SCHEMA IF NOT EXISTS ")
 _schema_sql = re.sub(r"(?i)\bgo\b", "", _schema_sql)
 _schema_sql = _schema_sql.replace("tinyint", "SMALLINT")
 TARGET_DB_SCHEMA = _schema_sql
@@ -57,6 +58,7 @@ _data_path = Path(__file__).resolve().parents[2] / "SQL-Server-Sample-Database" 
 _data_sql = _data_path.read_text(encoding="utf-8")
 _data_sql = re.sub(r"(?i)use BikeStores;", "", _data_sql)
 _data_sql = re.sub(r"(?i)SET\s+IDENTITY_INSERT\s+[^\s]+\s+(?:ON|OFF);?", "", _data_sql)
+_data_sql = re.sub(r"(?m)^INSERT INTO", ";\nINSERT INTO", _data_sql)
 TARGET_DB_DATA = _data_sql
 
 
@@ -377,9 +379,18 @@ def split_sql_statements(sql: str) -> list[str]:
 async def create_target_tables(session: AsyncSession) -> None:
     """Create reference tables (departments, employees, etc.) in the target DB."""
     logger.info("Creating target reference tables...")
-    for statement in split_sql_statements(TARGET_DB_SCHEMA):
+    statements = split_sql_statements(TARGET_DB_SCHEMA)
+    total = len(statements)
+    for i, statement in enumerate(statements, 1):
         if statement:
-            await session.execute(text(statement))
+            try:
+                async with session.begin_nested():
+                    await session.execute(text(statement))
+            except Exception as e:
+                pass
+            sys.stdout.write(f"\r  Progress: {i}/{total} [{int(i/total*100)}%]   ")
+            sys.stdout.flush()
+    sys.stdout.write("\n")
     await session.commit()
     logger.info("Reference tables created.")
 
@@ -387,11 +398,23 @@ async def create_target_tables(session: AsyncSession) -> None:
 async def insert_reference_data(session: AsyncSession) -> None:
     """Insert sample data into reference tables."""
     logger.info("Inserting reference data...")
-    for statement in split_sql_statements(TARGET_DB_DATA):
+    statements = split_sql_statements(TARGET_DB_DATA)
+    total = len(statements)
+    for i, statement in enumerate(statements, 1):
         if statement:
-            await session.execute(text(statement))
+            try:
+                async with session.begin_nested():
+                    await session.execute(text(statement))
+            except Exception as e:
+                if 'unique constraint' not in str(e).lower() and 'duplicate' not in str(e).lower():
+                    sys.stdout.write(f"\nError on statement {i}: {e}\n")
+            sys.stdout.write(f"\r  Progress: {i}/{total} [{int(i/total*100)}%]   ")
+            sys.stdout.flush()
+    sys.stdout.write("\n")
     await session.commit()
     logger.info("Reference data inserted.")
+
+
 
 
 async def seed_problems(session: AsyncSession) -> None:
@@ -483,4 +506,6 @@ async def seed_database() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+    logging.getLogger("sqlalchemy.engine").disabled = True
+    logging.getLogger("sqlalchemy.engine.Engine").disabled = True
     asyncio.run(seed_database())
