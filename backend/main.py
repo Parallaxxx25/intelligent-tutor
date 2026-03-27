@@ -20,6 +20,8 @@ from backend.api.routes import router as api_router
 from backend.api.websocket import router as ws_router
 from backend.config import get_settings
 from backend.db.database import close_db, init_db
+from backend.memory.redis_session import get_session_manager
+from backend.memory.long_term import get_long_term_memory
 
 settings = get_settings()
 
@@ -53,7 +55,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("RAG init failed (non-fatal): %s", e)
 
+    # Initialize memory components (Phase 3)
+    try:
+        session_manager = get_session_manager()
+        await session_manager.connect()
+        
+        long_term_memory = get_long_term_memory()
+        long_term_memory.initialize()
+        logger.info("Memory components initialised (Redis + Long-term).")
+    except Exception as e:
+        logger.warning("Memory init failed (non-fatal): %s", e)
+
     yield
+    # Shutdown memory components (Phase 3)
+    try:
+        session_manager = get_session_manager()
+        await session_manager.disconnect()
+    except Exception as e:
+        logger.warning("Memory disconnect failed (non-fatal): %s", e)
+
     await close_db()
     logger.info("Application shutdown complete.")
 

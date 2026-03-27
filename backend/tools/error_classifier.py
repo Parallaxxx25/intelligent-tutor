@@ -23,6 +23,8 @@ import logging
 import re
 from typing import Type
 
+import sqlglot
+
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Input / Output schemas
 # ---------------------------------------------------------------------------
+
 
 class SQLErrorClassifierInput(BaseModel):
     """Input schema for the sql_error_classifier tool."""
@@ -71,19 +74,13 @@ class SQLClassificationResult(BaseModel):
 # Pattern rules (ordered by priority)
 # ---------------------------------------------------------------------------
 
-_SYNTAX_PATTERNS = [
-    re.compile(r"syntax error", re.IGNORECASE),
-    re.compile(r"unexpected end of input", re.IGNORECASE),
-    re.compile(r"missing .+ at end of input", re.IGNORECASE),
-]
-
 _COLUMN_PATTERNS = [
     re.compile(r'column\s+"?\w+"?\s+does not exist', re.IGNORECASE),
     re.compile(r"unknown column", re.IGNORECASE),
 ]
 
 _RELATION_PATTERNS = [
-    re.compile(r'relation\s+"?\w+"?\s+does not exist', re.IGNORECASE),
+    re.compile(r'relation\s+"?[\w.]+"?\s+does not exist', re.IGNORECASE),
     re.compile(r"table .+ doesn.t exist", re.IGNORECASE),
     re.compile(r"unknown table", re.IGNORECASE),
 ]
@@ -125,6 +122,7 @@ _SUBQUERY_PATTERNS = [
 # LangChain Tool (replaces CrewAI BaseTool)
 # ---------------------------------------------------------------------------
 
+
 @tool(args_schema=SQLErrorClassifierInput)
 def sql_error_classifier_tool(
     error_message: str = "",
@@ -155,6 +153,7 @@ def sql_error_classifier_tool(
 # ---------------------------------------------------------------------------
 # Standalone helper
 # ---------------------------------------------------------------------------
+
 
 def classify_sql_error(
     error_message: str = "",
@@ -195,15 +194,17 @@ def classify_sql_error(
                 severity="high",
             )
 
-    # 3. Syntax error
-    for pat in _SYNTAX_PATTERNS:
-        if pat.search(error_message):
-            return SQLClassificationResult(
-                error_type="syntax_error",
-                error_message=error_message,
-                problematic_clause=_guess_problematic_clause_from_error(error_message),
-                severity="medium",
-            )
+    # 3. Syntax error (via SQLglot)
+    try:
+        if student_query:
+            sqlglot.parse_one(student_query)
+    except Exception as e:
+        return SQLClassificationResult(
+            error_type="syntax_error",
+            error_message=str(e),
+            problematic_clause=_guess_problematic_clause_from_error(str(e)),
+            severity="medium",
+        )
 
     # 4. Column error
     for pat in _COLUMN_PATTERNS:
@@ -299,6 +300,7 @@ def classify_sql_error(
 # Clause-guessing helpers
 # ---------------------------------------------------------------------------
 
+
 def _guess_problematic_clause_from_error(error_msg: str) -> str | None:
     """Try to guess which SQL clause caused a syntax error."""
     lower = error_msg.lower()
@@ -329,9 +331,7 @@ def _guess_clause(query: str, default: str = "SELECT") -> str:
     return found
 
 
-def _guess_logic_error_clause(
-    failed_details: str, student_query: str
-) -> str | None:
+def _guess_logic_error_clause(failed_details: str, student_query: str) -> str | None:
     """Heuristic to guess which clause causes a logic error."""
     lower_details = failed_details.lower()
 

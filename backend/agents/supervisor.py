@@ -13,10 +13,13 @@ Version: 2026-03-20 (LangGraph migration)
 from __future__ import annotations
 
 import json
+from langsmith import traceable
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, TypedDict
+
+import sqlglot
 
 from langgraph.graph import END, StateGraph
 
@@ -31,8 +34,6 @@ from backend.db.schemas import (
     SubmissionResponse,
     TestCaseResult,
 )
-from backend.prompts.diagnostician_prompts import DIAGNOSTICIAN_TASK_TEMPLATE
-from backend.prompts.tutor_prompts import TUTOR_TASK_TEMPLATE
 from backend.tools.error_classifier import classify_sql_error
 from backend.tools.hint_generator import generate_sql_hint
 from backend.tools.test_runner import run_sql_tests
@@ -40,10 +41,23 @@ from backend.tools.test_runner import run_sql_tests
 logger = logging.getLogger(__name__)
 
 
+def _format_sql_query(query: str) -> str:
+    """Format the student's query using sqlglot if syntax is valid."""
+    try:
+        parsed = sqlglot.parse_one(query)
+        return parsed.sql(pretty=True)
+    except Exception:
+        # Ignore syntax errors here; let Grader & Diagnostician handle it
+        # so it gets properly recorded as a failed attempt.
+        return query
+
+
 # ---------------------------------------------------------------------------
 # Pipeline (deterministic, no LLM required)
 # ---------------------------------------------------------------------------
 
+
+@traceable(name="Deterministic Pipeline")
 def run_pipeline_deterministic(
     submission: CodeSubmission,
     problem_description: str,
@@ -69,15 +83,21 @@ def run_pipeline_deterministic(
         A fully-populated ``SubmissionResponse``.
     """
     start_time = time.perf_counter()
+    submission.code = _format_sql_query(submission.code)
 
     # --- Step 1: Grade --------------------------------------------------
-    logger.info("Pipeline step 1/3: Grading SQL submission for problem %d", submission.problem_id)
+    logger.info(
+        "Pipeline step 1/3: Grading SQL submission for problem %d",
+        submission.problem_id,
+    )
 
     # Convert test cases to the format expected by run_sql_tests
     sql_test_cases = [
         {
             "test_case_id": tc.get("test_case_id", idx),
-            "expected_query": tc["input_data"],  # gold-standard query stored in input_data
+            "expected_query": tc[
+                "input_data"
+            ],  # gold-standard query stored in input_data
             "check_order": tc.get("check_order", True),
         }
         for idx, tc in enumerate(test_cases)
@@ -91,15 +111,17 @@ def run_pipeline_deterministic(
         total_tests=grading_raw["total_tests"],
         passed_tests=grading_raw["passed_tests"],
         test_results=[
-            TestCaseResult(**{
-                "test_case_id": tr["test_case_id"],
-                "passed": tr["passed"],
-                "error_message": tr.get("error_message"),
-                "expected_columns": tr.get("expected_columns"),
-                "actual_columns": tr.get("actual_columns"),
-                "expected_row_count": tr.get("expected_row_count"),
-                "actual_row_count": tr.get("actual_row_count"),
-            })
+            TestCaseResult(
+                **{
+                    "test_case_id": tr["test_case_id"],
+                    "passed": tr["passed"],
+                    "error_message": tr.get("error_message"),
+                    "expected_columns": tr.get("expected_columns"),
+                    "actual_columns": tr.get("actual_columns"),
+                    "expected_row_count": tr.get("expected_row_count"),
+                    "actual_row_count": tr.get("actual_row_count"),
+                }
+            )
             for tr in grading_raw["test_results"]
         ],
         student_error=grading_raw.get("student_error"),
@@ -187,6 +209,7 @@ def run_pipeline_deterministic(
 # LangGraph pipeline (replaces CrewAI, for Phase 2+)
 # ---------------------------------------------------------------------------
 
+
 class PipelineState(TypedDict, total=False):
     """Shared state passed through the LangGraph tutoring pipeline."""
 
@@ -227,6 +250,7 @@ def build_tutoring_graph() -> Any:
     return graph.compile()
 
 
+@traceable(name="LangGraph Pipeline")
 def run_pipeline_langgraph(
     submission: CodeSubmission,
     problem_description: str,
@@ -238,6 +262,8 @@ def run_pipeline_langgraph(
     Run the SQL tutoring pipeline using LangGraph.
     """
     start_time = time.perf_counter()
+    submission.code = _format_sql_query(submission.code)
+
     logger.info("LangGraph Pipeline step 1: Grading SQL submission")
 
     sql_test_cases = [
@@ -257,15 +283,17 @@ def run_pipeline_langgraph(
         total_tests=grading_raw["total_tests"],
         passed_tests=grading_raw["passed_tests"],
         test_results=[
-            TestCaseResult(**{
-                "test_case_id": tr["test_case_id"],
-                "passed": tr["passed"],
-                "error_message": tr.get("error_message"),
-                "expected_columns": tr.get("expected_columns"),
-                "actual_columns": tr.get("actual_columns"),
-                "expected_row_count": tr.get("expected_row_count"),
-                "actual_row_count": tr.get("actual_row_count"),
-            })
+            TestCaseResult(
+                **{
+                    "test_case_id": tr["test_case_id"],
+                    "passed": tr["passed"],
+                    "error_message": tr.get("error_message"),
+                    "expected_columns": tr.get("expected_columns"),
+                    "actual_columns": tr.get("actual_columns"),
+                    "expected_row_count": tr.get("expected_row_count"),
+                    "actual_row_count": tr.get("actual_row_count"),
+                }
+            )
             for tr in grading_raw["test_results"]
         ],
         student_error=grading_raw.get("student_error"),
@@ -281,7 +309,7 @@ def run_pipeline_langgraph(
             hint=HintResponse(
                 hint_level=0,
                 hint_text=(
-                    "🎉 Great job! Your SQL query is correct and returns the expected "
+                    "Great job! Your SQL query is correct and returns the expected "
                     "results. Well done!"
                 ),
                 hint_type="text",
@@ -298,14 +326,16 @@ def run_pipeline_langgraph(
 
     # Build and invoke the graph
     compiled_graph = build_tutoring_graph()
-    graph_output = compiled_graph.invoke({
-        "student_code": submission.code,
-        "grading_raw": grading_raw,
-        "grading_results_str": json.dumps(grading_raw, indent=2),
-        "attempt_count": attempt_count,
-        "problem_description": problem_description,
-        "problem_topic": problem_topic,
-    })
+    graph_output = compiled_graph.invoke(
+        {
+            "student_code": submission.code,
+            "grading_raw": grading_raw,
+            "grading_results_str": json.dumps(grading_raw, indent=2),
+            "attempt_count": attempt_count,
+            "problem_description": problem_description,
+            "problem_topic": problem_topic,
+        }
+    )
 
     # Build structured response from graph output
     diagnosis = DiagnosisResult(
@@ -321,10 +351,14 @@ def run_pipeline_langgraph(
 
     hint_raw = graph_output.get("hint_raw", {})
     hint = HintResponse(
-        hint_level=hint_raw.get("hint_level", graph_output.get("recommended_hint_level", 1)),
+        hint_level=hint_raw.get(
+            "hint_level", graph_output.get("recommended_hint_level", 1)
+        ),
         hint_text=graph_output.get("hint_text", str(graph_output)),
         hint_type=hint_raw.get("hint_type", "text"),
-        pedagogical_rationale=hint_raw.get("pedagogical_rationale", "Generated by LangGraph pipeline."),
+        pedagogical_rationale=hint_raw.get(
+            "pedagogical_rationale", "Generated by LangGraph pipeline."
+        ),
         follow_up_question=hint_raw.get("follow_up_question"),
     )
 
@@ -345,6 +379,8 @@ def run_pipeline_langgraph(
 # LLM-powered pipeline (Phase 2)
 # ---------------------------------------------------------------------------
 
+
+@traceable(name="LLM Pipeline")
 def run_pipeline_llm(
     submission: CodeSubmission,
     problem_description: str,
@@ -378,6 +414,8 @@ def run_pipeline_llm(
     Returns:
         A fully-populated ``SubmissionResponse``.
     """
+    submission.code = _format_sql_query(submission.code)
+
     from backend.guardrails import validate_input, validate_output
     from backend.llm import generate_response, generate_structured_response
     from backend.rag.retriever import retrieve_relevant_context
@@ -418,15 +456,17 @@ def run_pipeline_llm(
         total_tests=grading_raw["total_tests"],
         passed_tests=grading_raw["passed_tests"],
         test_results=[
-            TestCaseResult(**{
-                "test_case_id": tr["test_case_id"],
-                "passed": tr["passed"],
-                "error_message": tr.get("error_message"),
-                "expected_columns": tr.get("expected_columns"),
-                "actual_columns": tr.get("actual_columns"),
-                "expected_row_count": tr.get("expected_row_count"),
-                "actual_row_count": tr.get("actual_row_count"),
-            })
+            TestCaseResult(
+                **{
+                    "test_case_id": tr["test_case_id"],
+                    "passed": tr["passed"],
+                    "error_message": tr.get("error_message"),
+                    "expected_columns": tr.get("expected_columns"),
+                    "actual_columns": tr.get("actual_columns"),
+                    "expected_row_count": tr.get("expected_row_count"),
+                    "actual_row_count": tr.get("actual_row_count"),
+                }
+            )
             for tr in grading_raw["test_results"]
         ],
         student_error=grading_raw.get("student_error"),
@@ -443,7 +483,7 @@ def run_pipeline_llm(
             hint=HintResponse(
                 hint_level=0,
                 hint_text=(
-                    "🎉 Great job! Your SQL query is correct and returns the expected "
+                    "Great job! Your SQL query is correct and returns the expected "
                     "results. Well done!"
                 ),
                 hint_type="text",
@@ -486,9 +526,11 @@ def run_pipeline_llm(
         error_type=classification.error_type,
         n_results=3,
     )
-    rag_text = "\n\n".join(
-        f"### {doc['title']}\n{doc['content']}" for doc in rag_context
-    ) if rag_context else "No additional SQL reference available."
+    rag_text = (
+        "\n\n".join(f"### {doc['title']}\n{doc['content']}" for doc in rag_context)
+        if rag_context
+        else "No additional SQL reference available."
+    )
 
     # Use Gemini to produce a richer diagnosis
     try:
@@ -536,11 +578,19 @@ def run_pipeline_llm(
         )
 
         diagnosis = DiagnosisResult(
-            error_type=ErrorTypeEnum(llm_diagnosis.get("error_type", classification.error_type)),
-            error_message=llm_diagnosis.get("error_message", classification.error_message),
-            problematic_clause=llm_diagnosis.get("problematic_clause", classification.problematic_clause),
+            error_type=ErrorTypeEnum(
+                llm_diagnosis.get("error_type", classification.error_type)
+            ),
+            error_message=llm_diagnosis.get(
+                "error_message", classification.error_message
+            ),
+            problematic_clause=llm_diagnosis.get(
+                "problematic_clause", classification.problematic_clause
+            ),
             severity=llm_diagnosis.get("severity", classification.severity),
-            recommended_hint_level=int(llm_diagnosis.get("recommended_hint_level", rec_level)),
+            recommended_hint_level=int(
+                llm_diagnosis.get("recommended_hint_level", rec_level)
+            ),
             pedagogical_rationale=llm_diagnosis.get(
                 "pedagogical_rationale",
                 f"LLM diagnosis for attempt {attempt_count}.",
@@ -642,7 +692,9 @@ def run_pipeline_llm(
         )
 
     except Exception as e:
-        logger.warning("LLM hint generation failed (%s) — using rule-based fallback.", e)
+        logger.warning(
+            "LLM hint generation failed (%s) — using rule-based fallback.", e
+        )
         hint_raw = generate_sql_hint(
             error_type=classification.error_type,
             error_message=classification.error_message,
@@ -670,4 +722,3 @@ def run_pipeline_llm(
         overall_passed=grading.passed,
         timestamp=datetime.now(timezone.utc),
     )
-

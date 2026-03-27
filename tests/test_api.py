@@ -34,10 +34,7 @@ async def setup_database():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    from sqlalchemy import text
     async with engine.begin() as conn:
-        await conn.execute(text("DROP SCHEMA IF EXISTS production CASCADE;"))
-        await conn.execute(text("DROP SCHEMA IF EXISTS sales CASCADE;"))
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 

@@ -16,7 +16,6 @@ import json
 import logging
 from typing import Any
 
-from backend.prompts.diagnostician_prompts import DIAGNOSTICIAN_SYSTEM_PROMPT
 from backend.tools.error_classifier import classify_sql_error
 
 logger = logging.getLogger(__name__)

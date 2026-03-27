@@ -40,6 +40,9 @@ from backend.db.schemas import (
     SubmissionResponse,
     TestCaseResponse,
 )
+from backend.memory.redis_session import get_session_manager
+from backend.memory.long_term import get_long_term_memory
+from backend.memory.mastery import get_mastery_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +166,15 @@ async def submit_code(
         )
     )
     progress = progress_result.scalars().first()
-    attempt_count = (progress.attempts + 1) if progress else 1
+    
+    # --- Load Redis session (Phase 3) ------------------------------------
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(body.user_id, body.problem_id)
+    
+    # Use the session's attempt count if it's more up-to-date
+    session_attempts = session.get("attempts", 0)
+    db_attempts = progress.attempts if progress else 0
+    attempt_count = max(db_attempts, session_attempts) + 1
 
     # --- Build test case list -------------------------------------------
     test_cases_for_runner = [
@@ -251,7 +262,7 @@ async def submit_code(
 
     pipeline_result.submission_id = interaction.id
 
-    # --- Update student progress ----------------------------------------
+    # --- Update student progress & mastery ------------------------------
     if progress is None:
         progress = StudentProgress(
             user_id=body.user_id,
@@ -262,9 +273,56 @@ async def submit_code(
         )
         db.add(progress)
     else:
-        progress.attempts += 1
+        progress.attempts = attempt_count
         progress.best_score = max(progress.best_score, pipeline_result.grading.score)
         progress.last_attempt_at = datetime.now(timezone.utc)
+
+    # Apply mastery logic (Phase 3)
+    mastery_tracker = get_mastery_tracker()
+    await mastery_tracker.update_mastery(
+        db, 
+        body.user_id, 
+        body.problem_id, 
+        pipeline_result.grading.score, 
+        attempt_count,
+        topic=problem.topic
+    )
+
+    # --- Update Persistence & State (Phase 3) ---------------------------
+    # 1. Update Redis session
+    if pipeline_result.overall_passed:
+        # Clear short-term memory upon success
+        await session_manager.clear_session(body.user_id, body.problem_id)
+    else:
+        # Save state for the next escalation
+        await session_manager.update_session(body.user_id, body.problem_id, {
+            "attempts": attempt_count,
+            "last_error_type": (
+                pipeline_result.diagnosis.error_type if pipeline_result.diagnosis else None
+            ),
+            "last_hint_level": (
+                pipeline_result.hint.hint_level if pipeline_result.hint else None
+            ),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        })
+
+    # 2. Store in Long-term memory
+    try:
+        ltm = get_long_term_memory()
+        ltm.store_interaction(
+            user_id=body.user_id,
+            problem_id=body.problem_id,
+            code=body.code,
+            error_type=(
+                pipeline_result.diagnosis.error_type if pipeline_result.diagnosis else "none"
+            ),
+            hint_text=(
+                pipeline_result.hint.hint_text if pipeline_result.hint else "none"
+            ),
+            interaction_id=interaction.id,
+        )
+    except Exception as e:
+        logger.warning("Could not store interaction in LTM: %s", e)
 
     logger.info(
         "Pipeline complete: passed=%s, score=%.2f, hint_level=%s",

@@ -24,6 +24,7 @@ from backend.db.schemas import CodeSubmission
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_submission():
     """A sample student SQL submission."""
@@ -98,6 +99,7 @@ def mock_grading_passed():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestLLMPipelineInputGuardrails:
     """Test that input guardrails route to deterministic fallback."""
@@ -198,8 +200,10 @@ class TestLLMPipelineFallback:
         assert result.overall_passed is False
         assert result.diagnosis is not None
         # Should have used rule-based fallback
-        assert "rule-based" in result.diagnosis.pedagogical_rationale.lower() or \
-               "fallback" in result.diagnosis.pedagogical_rationale.lower()
+        assert (
+            "rule-based" in result.diagnosis.pedagogical_rationale.lower()
+            or "fallback" in result.diagnosis.pedagogical_rationale.lower()
+        )
 
     @patch("backend.rag.retriever.retrieve_relevant_context")
     @patch("backend.llm.generate_structured_response")
@@ -221,17 +225,20 @@ class TestLLMPipelineFallback:
         mock_tests.return_value = mock_grading_failed
         mock_rag.return_value = []
 
-        # Diagnosis succeeds
-        mock_structured.return_value = {
-            "error_type": "relation_error",
-            "error_message": "Table 'employee' does not exist",
-            "problematic_clause": "FROM",
-            "severity": "medium",
-            "recommended_hint_level": 1,
-            "pedagogical_rationale": "First attempt, gentle nudge.",
-        }
+        # Diagnosis succeeds, hint generation should throw error inside generate_sql_hint as well if called, or Mock it properly.
+        mock_structured.side_effect = [
+            {
+                "error_type": "relation_error",
+                "error_message": "Table 'employee' does not exist",
+                "problematic_clause": "FROM",
+                "severity": "medium",
+                "recommended_hint_level": 1,
+                "pedagogical_rationale": "First attempt, gentle nudge.",
+            },
+            Exception("Gemini quota exceeded during hint generation fallback"),
+        ]
 
-        # Hint generation fails
+        # Hint generation fails in primary path
         mock_gen.side_effect = RuntimeError("Gemini quota exceeded")
 
         result = run_pipeline_llm(
@@ -282,7 +289,9 @@ class TestLLMPipelineOutputGuardrails:
             "pedagogical_rationale": "First attempt.",
         }
 
-        mock_gen.return_value = "The answer is SELECT name FROM employees WHERE salary > 50000"
+        mock_gen.return_value = (
+            "The answer is SELECT name FROM employees WHERE salary > 50000"
+        )
 
         mock_validate_out.return_value = MagicMock(
             passed=False,

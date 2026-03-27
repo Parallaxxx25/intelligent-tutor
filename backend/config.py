@@ -11,6 +11,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+# Force environment variables into the OS environ where LangSmith can see them globally
+load_dotenv()
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,11 +38,13 @@ class Settings(BaseSettings):
     # -- LLM -----------------------------------------------------------------
     GOOGLE_API_KEY: str = ""
     LLM_MODEL: str = "gemini/gemini-2.5-flash"
+    OPENROUTER_API_KEY: str = ""
 
     # -- Observability -------------------------------------------------------
     LANGSMITH_API_KEY: str = ""
-    LANGCHAIN_TRACING_V2: bool = True
+    LANGCHAIN_TRACING: bool = True
     LANGCHAIN_PROJECT: str = "intelligent-tutor"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # -- Databases -----------------------------------------------------------
     POSTGRES_URL: str = "postgresql+asyncpg://tutor:tutor_pass@localhost:5432/tutor_db"
@@ -51,6 +58,10 @@ class Settings(BaseSettings):
     # -- RAG (Phase 2) -------------------------------------------------------
     CHROMA_PERSIST_DIR: str = ""  # empty = in-memory (ephemeral)
     EMBEDDING_MODEL: str = "models/gemini-embedding-001"
+
+    # -- Persistence & State (Phase 3) ----------------------------------------
+    REDIS_SESSION_TTL: int = 86400  # 24 hours in seconds
+    CHROMA_STUDENT_COLLECTION: str = "student_interactions"
 
     # -- Guardrails (Phase 2) ------------------------------------------------
     GUARDRAIL_MAX_QUERY_LENGTH: int = 5000
