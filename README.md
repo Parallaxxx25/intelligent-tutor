@@ -62,6 +62,7 @@ A **multi-agent AI tutoring system** for personalized SQL education, built with 
 cd d:\Inte_\intelligent-tutor
 copy .env.example .env
 # Edit .env and add your GOOGLE_API_KEY
+# (Optional) Add LANGSMITH_API_KEY for LLM token cost & tracing
 ```
 
 ### 2. Start databases

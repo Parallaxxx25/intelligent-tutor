@@ -13,6 +13,7 @@ Version: 2026-03-20 (LangGraph migration)
 from __future__ import annotations
 
 import json
+from langsmith import traceable
 import logging
 import time
 from datetime import datetime, timezone
@@ -58,6 +59,7 @@ def _format_sql_query(query: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@traceable(name="Deterministic Pipeline")
 def run_pipeline_deterministic(
     submission: CodeSubmission,
     problem_description: str,
@@ -250,6 +252,7 @@ def build_tutoring_graph() -> Any:
     return graph.compile()
 
 
+@traceable(name="LangGraph Pipeline")
 def run_pipeline_langgraph(
     submission: CodeSubmission,
     problem_description: str,
@@ -379,6 +382,7 @@ def run_pipeline_langgraph(
 # ---------------------------------------------------------------------------
 
 
+@traceable(name="LLM Pipeline")
 def run_pipeline_llm(
     submission: CodeSubmission,
     problem_description: str,
