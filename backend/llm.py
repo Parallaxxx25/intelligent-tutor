@@ -75,7 +75,7 @@ def generate_response(
     system_instruction: str = "",
     temperature: float = 0.7,
     max_output_tokens: int = 2048,
-    max_retries: int = 2,
+    max_retries: int = 1,
 ) -> str:
     """
     Generate a plain-text response from Gemini using LangChain wrapper.

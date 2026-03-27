@@ -34,8 +34,6 @@ from backend.db.schemas import (
     SubmissionResponse,
     TestCaseResult,
 )
-from backend.prompts.diagnostician_prompts import DIAGNOSTICIAN_TASK_TEMPLATE
-from backend.prompts.tutor_prompts import TUTOR_TASK_TEMPLATE
 from backend.tools.error_classifier import classify_sql_error
 from backend.tools.hint_generator import generate_sql_hint
 from backend.tools.test_runner import run_sql_tests
@@ -311,7 +309,7 @@ def run_pipeline_langgraph(
             hint=HintResponse(
                 hint_level=0,
                 hint_text=(
-                    "🎉 Great job! Your SQL query is correct and returns the expected "
+                    "Great job! Your SQL query is correct and returns the expected "
                     "results. Well done!"
                 ),
                 hint_type="text",
@@ -485,7 +483,7 @@ def run_pipeline_llm(
             hint=HintResponse(
                 hint_level=0,
                 hint_text=(
-                    "🎉 Great job! Your SQL query is correct and returns the expected "
+                    "Great job! Your SQL query is correct and returns the expected "
                     "results. Well done!"
                 ),
                 hint_type="text",

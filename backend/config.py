@@ -11,6 +11,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+# Force environment variables into the OS environ where LangSmith can see them globally
+load_dotenv()
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,8 +41,9 @@ class Settings(BaseSettings):
 
     # -- Observability -------------------------------------------------------
     LANGSMITH_API_KEY: str = ""
-    LANGCHAIN_TRACING_V2: bool = True
+    LANGCHAIN_TRACING: bool = True
     LANGCHAIN_PROJECT: str = "intelligent-tutor"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # -- Databases -----------------------------------------------------------
     POSTGRES_URL: str = "postgresql+asyncpg://tutor:tutor_pass@localhost:5432/tutor_db"
