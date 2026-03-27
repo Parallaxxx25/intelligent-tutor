@@ -28,6 +28,10 @@ google-genai>=1.38.0
 # RAG
 chromadb>=1.0.0
 
+# Evaluation
+ragas>=0.4.0
+datasets>=2.14.0
+
 # Observability
 langsmith>=0.2.0
 
