@@ -27,6 +27,7 @@ from backend.tools.hint_generator import generate_sql_hint
 # SQL Executor — Security checks (no database needed)
 # ===================================================================
 
+
 class TestSQLExecutorSecurity:
     """Security validation tests for execute_sql."""
 
@@ -90,6 +91,7 @@ class TestSQLExecutorSecurity:
 # SQL Error Classifier
 # ===================================================================
 
+
 class TestSQLErrorClassifier:
     """Tests for classify_sql_error helper function."""
 
@@ -102,7 +104,8 @@ class TestSQLErrorClassifier:
     def test_syntax_error(self) -> None:
         """Syntax error in SQL."""
         result = classify_sql_error(
-            error_message='ERROR: syntax error at or near "SELCT"',
+            error_message="",
+            student_query="SELCT * FROM users",
             all_tests_passed=False,
         )
         assert result.error_type == "syntax_error"
@@ -213,6 +216,7 @@ class TestSQLErrorClassifier:
 # SQL Hint Generator (LLM-powered, with mock)
 # ===================================================================
 
+
 def _mock_llm_response(hint_level: int, error_type: str, **kwargs):
     """Return a mock LLM structured response matching what the LLM would produce."""
     responses = {
@@ -257,7 +261,10 @@ class TestSQLHintGenerator:
             student_query="SELECT * FROM employees",
         )
         assert result["hint_level"] == 0
-        assert "great" in result["hint_text"].lower() or "correct" in result["hint_text"].lower()
+        assert (
+            "great" in result["hint_text"].lower()
+            or "correct" in result["hint_text"].lower()
+        )
 
     @patch("backend.tools.hint_generator._generate_hint_with_llm")
     def test_level_1_first_attempt(self, mock_llm) -> None:
@@ -394,11 +401,17 @@ class TestSQLHintGenerator:
         )
         assert result["hint_level"] == 1
         lower_text = result["hint_text"].lower()
-        assert "from" in lower_text or "long" in lower_text or "timeout" in lower_text or "cartesian" in lower_text
+        assert (
+            "from" in lower_text
+            or "long" in lower_text
+            or "timeout" in lower_text
+            or "cartesian" in lower_text
+        )
 
     def test_fallback_level_2_content(self) -> None:
         """Verify rule-based fallback produces correct level 2 content."""
         from backend.tools.hint_generator import _generate_hint_rulebased
+
         result = _generate_hint_rulebased(
             error_type="aggregation_error",
             error_message="must appear in GROUP BY",
@@ -413,6 +426,7 @@ class TestSQLHintGenerator:
     def test_fallback_level_4_has_blanks(self) -> None:
         """Verify rule-based fallback level 4 has fill-in-the-blanks."""
         from backend.tools.hint_generator import _generate_hint_rulebased
+
         result = _generate_hint_rulebased(
             error_type="logic_error",
             error_message="Wrong output",
