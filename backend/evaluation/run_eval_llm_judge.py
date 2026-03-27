@@ -1,19 +1,16 @@
 """
-RAGAS Evaluation Runner — CLI entry point.
+OpenRouter LLM-as-a-Judge Evaluation Runner — CLI entry point.
 
-Runs the full RAG evaluation pipeline:
-  1. Initialises ChromaDB knowledge base
-  2. For each evaluation sample, runs the RAG pipeline
-  3. Computes RAGAS metrics + custom hint-quality metrics
-  4. Outputs report in markdown, JSON, or CSV format
+Runs the evaluation pipeline strictly using the OpenRouter LLM-as-a-judge
+(`openai/gpt-oss-120b`) without relying on RAGAS metrics.
 
 Usage:
-    python -m backend.evaluation.run_evaluation
-    python -m backend.evaluation.run_evaluation --output csv
-    python -m backend.evaluation.run_evaluation --output json
-    python -m backend.evaluation.run_evaluation --output csv --csv-path results.csv
+    python -m backend.evaluation.run_eval_llm_judge
+    python -m backend.evaluation.run_eval_llm_judge --output csv
+    python -m backend.evaluation.run_eval_llm_judge --output json
+    python -m backend.evaluation.run_eval_llm_judge --output csv --csv-path judge_results.csv
 
-Version: 2026-03-27
+Version: 2026-03-28
 """
 
 from __future__ import annotations
@@ -24,12 +21,12 @@ import sys
 from pathlib import Path
 
 from backend.evaluation.eval_dataset import EVAL_DATASET, EvalSample
-from backend.evaluation.ragas_evaluator import (
-    RagasEvaluator,
-    format_report_csv,
-    format_report_json,
-    format_report_markdown,
-    export_report_csv,
+from backend.evaluation.llm_judge import (
+    OpenRouterJudge,
+    format_judge_report_csv,
+    format_judge_report_json,
+    format_judge_report_markdown,
+    export_judge_report_csv,
 )
 
 logging.basicConfig(
@@ -40,35 +37,29 @@ logger = logging.getLogger(__name__)
 
 
 def _build_user_input(sample: EvalSample) -> str:
-    """Build the user_input string for RAGAS from an EvalSample."""
-    parts = [
-        f"Problem: {sample.problem_description}",
-        f"Student SQL: {sample.student_query}",
-    ]
-    if sample.error_message:
-        parts.append(f"Error: {sample.error_message}")
-    parts.append(f"Error Type: {sample.error_type}")
-    parts.append(f"Attempt: {sample.attempt_count}")
-    return "\n".join(parts)
+    """Build the user_input string for context."""
+    return (
+        f"Problem: {sample.problem_description}\n"
+        f"Student Query:\n{sample.student_query}\n"
+        f"Error: {sample.error_message}\n"
+    )
 
 
-def run_evaluation(
-    use_llm_metrics: bool = True,
+def run_llm_judge_evaluation(
     output_format: str = "markdown",
     csv_path: str | None = None,
 ) -> str:
     """
-    Run the full RAGAS evaluation.
+    Run the LLM-as-a-judge evaluation.
 
     Args:
-        use_llm_metrics: Whether to use LLM-based RAGAS metrics.
         output_format: 'markdown', 'json', or 'csv'.
         csv_path: Optional file path for CSV export.
 
     Returns:
         The formatted report string.
     """
-    # Step 1: Initialise knowledge base
+    # Step 1: Initialise knowledge base (needed for generating hints contextually!)
     logger.info("Step 1: Initialising ChromaDB knowledge base...")
     try:
         from backend.rag.retriever import (
@@ -83,24 +74,33 @@ def run_evaluation(
         retrieve_relevant_context = None
 
     # Step 2: Build evaluation samples
-    logger.info("Step 2: Building %d evaluation samples...", len(EVAL_DATASET))
-    eval_samples: list[dict] = []
+    logger.info("Step 2: Building evaluation samples and generating hints...")
+    eval_samples = []
 
-    for sample in EVAL_DATASET:
+    for idx, sample in enumerate(EVAL_DATASET):
+        logger.info(
+            "Processing sample %d/%d: %s (Level %d)",
+            idx + 1,
+            len(EVAL_DATASET),
+            sample.sample_id,
+            sample.hint_level,
+        )
+
         user_input = _build_user_input(sample)
-
-        # Retrieve RAG contexts for this sample
         retrieved_contexts = []
         retrieved_topics = []
-        if retrieve_relevant_context is not None and sample.error_type != "no_error":
+
+        if retrieve_relevant_context is not None:
             try:
-                rag_results = retrieve_relevant_context(
-                    query=f"{sample.error_type}: {sample.student_query}",
+                docs = retrieve_relevant_context(
+                    query=user_input,
                     error_type=sample.error_type,
                     n_results=3,
                 )
-                retrieved_contexts = [doc["content"] for doc in rag_results]
-                retrieved_topics = [doc["topic"] for doc in rag_results]
+                retrieved_contexts = [f"### {d['title']}\n{d['content']}" for d in docs]
+                retrieved_topics = [
+                    d.get("metadata", {}).get("topic", "") for d in docs
+                ]
             except Exception as e:
                 logger.warning("RAG retrieval failed for %s: %s", sample.sample_id, e)
 
@@ -139,29 +139,30 @@ def run_evaluation(
             }
         )
 
-    # Step 3: Run RAGAS evaluation
-    logger.info("Step 3: Running RAGAS evaluation...")
-    evaluator = RagasEvaluator() if use_llm_metrics else RagasEvaluator(llm=None)
-    report = evaluator.evaluate_batch(eval_samples)
+    # Step 3: Run LLM-as-a-judge evaluation
+    logger.info("Step 3: Running OpenRouter LLM-as-a-judge evaluation...")
+    judge = OpenRouterJudge()
+    report = judge.evaluate_batch(eval_samples)
 
     # Step 4: Format output
     logger.info("Step 4: Generating %s report...", output_format)
 
     if output_format == "csv":
-        result = format_report_csv(report)
+        result = format_judge_report_csv(report)
         # Also export to file if path is provided
         if csv_path:
-            export_report_csv(report, csv_path)
+            logger.info("Exporting CSV to %s...", csv_path)
+            export_judge_report_csv(report, csv_path)
             logger.info("CSV exported to: %s", csv_path)
         else:
             # Default CSV path
-            default_path = Path("evaluation_results.csv")
-            export_report_csv(report, default_path)
+            default_path = Path("judge_results.csv")
+            export_judge_report_csv(report, default_path)
             logger.info("CSV exported to: %s", default_path.resolve())
     elif output_format == "json":
-        result = format_report_json(report)
+        result = format_judge_report_json(report)
     else:
-        result = format_report_markdown(report)
+        result = format_judge_report_markdown(report)
 
     return result
 
@@ -169,7 +170,7 @@ def run_evaluation(
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="RAGAS Evaluation Runner for the SQL Tutoring Pipeline",
+        description="LLM Judge Evaluation Runner for the SQL Tutoring Pipeline",
     )
     parser.add_argument(
         "--output",
@@ -181,18 +182,12 @@ def main() -> None:
         "--csv-path",
         type=str,
         default=None,
-        help="File path for CSV export (default: evaluation_results.csv)",
-    )
-    parser.add_argument(
-        "--no-llm",
-        action="store_true",
-        help="Skip LLM-based RAGAS metrics (faster, uses only custom metrics)",
+        help="File path for CSV export (default: judge_results.csv)",
     )
 
     args = parser.parse_args()
 
-    report = run_evaluation(
-        use_llm_metrics=not args.no_llm,
+    report = run_llm_judge_evaluation(
         output_format=args.output,
         csv_path=args.csv_path,
     )

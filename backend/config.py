@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # -- LLM -----------------------------------------------------------------
     GOOGLE_API_KEY: str = ""
     LLM_MODEL: str = "gemini/gemini-2.5-flash"
+    OPENROUTER_API_KEY: str = ""
 
     # -- Observability -------------------------------------------------------
     LANGSMITH_API_KEY: str = ""
