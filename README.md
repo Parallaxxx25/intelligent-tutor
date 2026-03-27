@@ -8,20 +8,20 @@ A **multi-agent AI tutoring system** for personalized SQL education, built with 
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                 Interaction Layer (Blue)                  │
+│                 Interaction Layer                │
 │              FastAPI REST + WebSocket API                 │
 ├─────────────────────────────────────────────────────────┤
-│            Agent Orchestration Layer (Green)              │
+│            Agent Orchestration Layer              │
 │     ┌──────────┐  ┌──────────────┐  ┌───────────┐       │
 │     │  Grader  │→ │ Diagnostician│→ │   Tutor   │       │
 │     │  Agent   │  │    Agent     │  │   Agent   │       │
 │     └──────────┘  └──────────────┘  └───────────┘       │
 │              LangGraph StateGraph Pipeline                   │
 ├─────────────────────────────────────────────────────────┤
-│              Cognitive Layer (Orange)                     │
+│              Cognitive Layer                   │
 │         Google Gemini  •  RAG  •  Guardrails             │
 ├─────────────────────────────────────────────────────────┤
-│           Data & Memory Layer (Purple)                    │
+│           Data & Memory Layer                  │
 │      PostgreSQL (Target + Profile)  •  Redis             │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -56,12 +56,13 @@ A **multi-agent AI tutoring system** for personalized SQL education, built with 
 - Python 3.11+
 - Docker & Docker Compose
 - Google API Key (Gemini)
+- OpenRouter API Key (LLM-as-a-judge evaluation)
 
 ### 1. Clone & configure
 ```bash
 cd d:\Inte_\intelligent-tutor
 copy .env.example .env
-# Edit .env and add your GOOGLE_API_KEY
+# Edit .env and add your GOOGLE_API_KEY and OPENROUTER_API_KEY
 # (Optional) Add LANGSMITH_API_KEY for LLM token cost & tracing
 ```
 
@@ -113,11 +114,10 @@ Visit [http://localhost:8000/docs](http://localhost:8000/docs) for the Swagger U
 
 ## Project Structure
 
-```
+```text
 intelligent-tutor/
 ├── backend/
 │   ├── agents/           # LangGraph agent node definitions
-│   │   ├── grader.py         # SQL query grader
 │   │   ├── diagnostician.py  # SQL error classifier
 │   │   ├── tutor.py          # Hint generator
 │   │   └── supervisor.py     # Pipeline orchestrator
@@ -126,6 +126,19 @@ intelligent-tutor/
 │   │   ├── test_runner.py    # SQL result-set comparison
 │   │   ├── error_classifier.py # SQL error taxonomy
 │   │   └── hint_generator.py # SQL-specific hint scaffolding
+│   ├── memory/           # Agent memory management
+│   │   ├── long_term.py
+│   │   ├── mastery.py
+│   │   └── redis_session.py
+│   ├── rag/              # Retrieval-Augmented Generation
+│   │   ├── retriever.py
+│   │   └── sql_knowledge.py
+│   ├── evaluation/       # Performance evaluation & Judges
+│   │   ├── eval_dataset.py
+│   │   ├── ragas_evaluator.py
+│   │   ├── run_evaluation.py
+│   │   ├── llm_judge.py
+│   │   └── run_eval_llm_judge.py
 │   ├── db/               # Database layer
 │   │   ├── models.py     # SQLAlchemy ORM models
 │   │   ├── schemas.py    # Pydantic validation schemas
@@ -134,8 +147,9 @@ intelligent-tutor/
 │   ├── api/              # FastAPI endpoints
 │   │   ├── routes.py
 │   │   └── websocket.py
-│   ├── prompts/          # Versioned prompt templates
-│   ├── config.py
+│   ├── config.py         # App configurations
+│   ├── guardrails.py     # Output formatting and protection
+│   ├── llm.py            # LLM connection instances
 │   └── main.py
 ├── tests/                # Pytest test suite
 ├── docker-compose.yml
@@ -143,10 +157,11 @@ intelligent-tutor/
 └── README.md
 ```
 
-## Running Tests
+## Running Tests & Evaluation
 
+### Pytest Suite
 ```bash
-# Tool tests (error classifier + hint generator — no DB needed)
+# Tool tests (error classifier + hint generator â€” no DB needed)
 pytest tests/test_tools.py -v
 
 # API tests (requires PostgreSQL)
@@ -154,6 +169,26 @@ pytest tests/test_tools.py -v
 
 # All tests
 pytest -v
+```
+
+### RAGAS Evaluation
+Evaluates the accuracy of the Retrieval-Augmented Generation (RAG) components:
+```bash
+# Markdown output
+python -m backend.evaluation.run_evaluation
+
+# CSV export
+python -m backend.evaluation.run_evaluation --output csv --csv-path results.csv
+```
+
+### LLM-as-a-Judge Evaluation
+Uses a strict evaluator (via OpenRouter's `gpt-oss-120b` or similar model) to assess hint instructional quality, pedagogical compliance, and solution leakage prevention:
+```bash
+# Markdown output
+python -m backend.evaluation.run_eval_llm_judge
+
+# CSV export
+python -m backend.evaluation.run_eval_llm_judge --output csv --csv-path judge_results.csv
 ```
 
 ## License
