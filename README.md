@@ -88,7 +88,14 @@ python -m backend.db.seed
 uvicorn backend.main:app --reload
 ```
 
-### 6. Open API docs
+### 6. Start the AI Tutor Playground (Streamlit)
+Open a new terminal, activate the virtual environment, and run the Streamlit frontend. This interactive sandbox lets you execute SQL, generate hints, and visualize the system's Short-term (Redis) and Long-term (Chroma) memory live:
+```bash
+streamlit run frontend/app.py
+```
+*Note: Ensure the FastAPI backend from step 5 is running simultaneously.*
+
+### 7. Open API docs
 Visit [http://localhost:8000/docs](http://localhost:8000/docs) for the Swagger UI.
 
 ## API Endpoints
