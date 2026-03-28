@@ -1,0 +1,17 @@
+sample_id,error_type,hint_level,faithfulness,answer_relevancy,context_precision,context_recall,hint_level_compliance,no_solution_leakage
+eval_csv_01,grouping_error,4,0.5000,0.6747,1.0000,0.0000,0.3000,1.0000
+eval_csv_02,grouping_error,1,0.3333,0.7407,1.0000,1.0000,1.0000,1.0000
+eval_csv_03,column_error,1,0.2500,0.7180,1.0000,1.0000,1.0000,1.0000
+eval_csv_04,grouping_error,2,0.0000,0.7269,1.0000,0.0000,0.5000,1.0000
+eval_csv_05,syntax_error,3,0.0000,0.7207,1.0000,1.0000,0.3000,1.0000
+eval_csv_07,column_error,2,0.0000,0.6946,1.0000,1.0000,0.5000,1.0000
+eval_csv_08,grouping_error,2,0.0000,0.7723,1.0000,0.0000,0.5000,1.0000
+eval_csv_09,syntax_error,1,0.0000,0.6966,1.0000,1.0000,1.0000,1.0000
+eval_csv_10,column_error,4,0.0000,0.7137,1.0000,1.0000,0.3000,1.0000
+eval_csv_11,column_error,3,0.0000,0.6811,0.5833,1.0000,0.3000,1.0000
+eval_csv_12,syntax_error,3,0.0000,0.7328,0.5000,1.0000,0.3000,1.0000
+eval_csv_13,grouping_error,4,0.3333,0.7069,1.0000,1.0000,0.3000,1.0000
+
+AVERAGE,,,0.1181,0.7149,0.9236,0.7500,0.5250,1.0000
+
+TAXONOMY_COVERAGE,3/11,27%

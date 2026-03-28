@@ -209,10 +209,10 @@ python -m backend.evaluation.run_evaluation
 # Run with a custom CSV dataset
 python -m backend.evaluation.run_evaluation --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv"
 
-python -m backend.evaluation.run_evaluation --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv" --output csv --csv-path results_bike.csv 
+python -m backend.evaluation.run_evaluation --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv" --output csv --csv-path results_ragas_bike.csv 
 
 # CSV export
-python -m backend.evaluation.run_evaluation --output csv --csv-path results.csv 
+python -m backend.evaluation.run_evaluation --output csv --csv-path results_ragas.csv 
 ```
 
 ### LLM-as-a-Judge Evaluation
