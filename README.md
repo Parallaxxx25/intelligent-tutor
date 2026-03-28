@@ -183,31 +183,48 @@ Run the included Streamlit-based interactive UI to experiment with the SQL sandb
 
 ### Pytest Suite
 ```bash
-# Tool tests (error classifier + hint generator â€” no DB needed)
+# Tool tests (error classifier + hint generator — no DB needed)
 pytest tests/test_tools.py -v
 
 # API tests (requires PostgreSQL)
-pytest tests/test_tools.py -v
+pytest tests/test_api.py -v
 
 # All tests
 pytest -v
 ```
 
+### Evaluation Datasets
+The pipeline evaluates hints against pre-defined error scenarios. You can dynamically define new subsets using a CSV evaluation dataset.
+A script is included to help generate an evaluation CSV derived from your practice question CSVs:
+```bash
+python generate_eval_csv.py
+```
+
 ### RAGAS Evaluation
 Evaluates the accuracy of the Retrieval-Augmented Generation (RAG) components:
 ```bash
-# Markdown output
+# Markdown output (uses internal hardcoded dataset by default)
 python -m backend.evaluation.run_evaluation
 
+# Run with a custom CSV dataset
+python -m backend.evaluation.run_evaluation --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv"
+
+python -m backend.evaluation.run_evaluation --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv" --output csv --csv-path results_bike.csv 
+
 # CSV export
-python -m backend.evaluation.run_evaluation --output csv --csv-path results.csv
+python -m backend.evaluation.run_evaluation --output csv --csv-path results.csv 
 ```
 
 ### LLM-as-a-Judge Evaluation
 Uses a strict evaluator (via OpenRouter's `gpt-oss-120b` or similar model) to assess hint instructional quality, pedagogical compliance, and solution leakage prevention:
 ```bash
-# Markdown output
+# Markdown output (uses internal hardcoded dataset by default)
 python -m backend.evaluation.run_eval_llm_judge
+
+# Run against a custom CSV dataset
+python -m backend.evaluation.run_eval_llm_judge --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv" --output markdown
+
+python -m backend.evaluation.run_eval_llm_judge --dataset-csv "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv" --output csv --csv-path judge_results_bike.csv
 
 # CSV export
 python -m backend.evaluation.run_eval_llm_judge --output csv --csv-path judge_results.csv
