@@ -157,6 +157,21 @@ intelligent-tutor/
 └── README.md
 ```
 
+## Quickstart: AI Tutor Playground
+
+Run the included Streamlit-based interactive UI to experiment with the SQL sandbox, observe hint generation, and view the AI's internal memory state (Redis & ChromaDB) in real-time.
+
+1. **Start the FastAPI Backend**:
+   ```bash
+   python -m uvicorn backend.main:app
+   ```
+
+2. **Start the Streamlit Frontend** (in a new terminal):
+   ```bash
+   streamlit run frontend/app.py
+   ```
+   *Note: Ensure your Docker containers for PostgreSQL and Redis are running.*
+
 ## Running Tests & Evaluation
 
 ### Pytest Suite

@@ -18,13 +18,19 @@ from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.agents.supervisor import run_pipeline_langgraph, run_pipeline_deterministic, run_pipeline_llm
+from backend.agents.supervisor import (
+    run_pipeline_langgraph,
+    run_pipeline_deterministic,
+    run_pipeline_llm,
+)
 from backend.config import get_settings
 from backend.db.database import get_db
+from backend.api.websocket import manager as ws_manager
 from backend.db.models import (
     InteractionHistory,
     Problem,
@@ -51,6 +57,7 @@ router = APIRouter(prefix="/api", tags=["Tutoring API"])
 
 class PipelineMode(str, Enum):
     """Pipeline execution mode."""
+
     DETERMINISTIC = "deterministic"
     LLM = "llm"
     LANGGRAPH = "langgraph"
@@ -59,6 +66,7 @@ class PipelineMode(str, Enum):
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
@@ -73,6 +81,7 @@ async def health_check() -> HealthResponse:
 # ---------------------------------------------------------------------------
 # Problems
 # ---------------------------------------------------------------------------
+
 
 @router.get("/problems", response_model=list[ProblemListItem])
 async def list_problems(db: AsyncSession = Depends(get_db)) -> Any:
@@ -116,6 +125,7 @@ async def get_problem(
 # ---------------------------------------------------------------------------
 # Submit code
 # ---------------------------------------------------------------------------
+
 
 @router.post("/submit", response_model=SubmissionResponse)
 async def submit_code(
@@ -166,11 +176,11 @@ async def submit_code(
         )
     )
     progress = progress_result.scalars().first()
-    
+
     # --- Load Redis session (Phase 3) ------------------------------------
     session_manager = get_session_manager()
     session = await session_manager.get_session(body.user_id, body.problem_id)
-    
+
     # Use the session's attempt count if it's more up-to-date
     session_attempts = session.get("attempts", 0)
     db_attempts = progress.attempts if progress else 0
@@ -192,17 +202,24 @@ async def submit_code(
 
     logger.info(
         "Running pipeline (%s): user=%d, problem=%d, attempt=%d",
-        effective_mode.value, body.user_id, body.problem_id, attempt_count,
+        effective_mode.value,
+        body.user_id,
+        body.problem_id,
+        attempt_count,
     )
 
     # --- Run pipeline ---------------------------------------------------
+    session_id_str = f"{body.user_id}:{body.problem_id}"
+    await ws_manager.send_event(session_id_str, {"event": "grading_started"})
+
     if effective_mode == PipelineMode.LLM:
         # Extract gold-standard query for output guardrails
         gold_standard = ""
         if problem.test_cases:
             gold_standard = problem.test_cases[0].input_data or ""
 
-        pipeline_result = run_pipeline_llm(
+        pipeline_result = await run_in_threadpool(
+            run_pipeline_llm,
             submission=body,
             problem_description=problem.description,
             problem_topic=problem.topic,
@@ -212,7 +229,8 @@ async def submit_code(
             schema_info=None,  # TODO: extract from problem metadata
         )
     elif effective_mode == PipelineMode.LANGGRAPH:
-        pipeline_result = run_pipeline_langgraph(
+        pipeline_result = await run_in_threadpool(
+            run_pipeline_langgraph,
             submission=body,
             problem_description=problem.description,
             problem_topic=problem.topic,
@@ -220,12 +238,37 @@ async def submit_code(
             attempt_count=attempt_count,
         )
     else:
-        pipeline_result = run_pipeline_deterministic(
+        pipeline_result = await run_in_threadpool(
+            run_pipeline_deterministic,
             submission=body,
             problem_description=problem.description,
             problem_topic=problem.topic,
             test_cases=test_cases_for_runner,
             attempt_count=attempt_count,
+        )
+
+    await ws_manager.send_event(
+        session_id_str,
+        {
+            "event": "grading_complete",
+            "score": pipeline_result.grading.score,
+            "passed": pipeline_result.grading.passed,
+        },
+    )
+
+    if pipeline_result.diagnosis:
+        await ws_manager.send_event(
+            session_id_str,
+            {
+                "event": "diagnosis_complete",
+                "error_type": pipeline_result.diagnosis.error_type,
+            },
+        )
+
+    if pipeline_result.hint:
+        await ws_manager.send_event(
+            session_id_str,
+            {"event": "hint_ready", "hint_level": pipeline_result.hint.hint_level},
         )
 
     # --- Log interaction ------------------------------------------------
@@ -237,25 +280,15 @@ async def submit_code(
         grading_score=pipeline_result.grading.score,
         grading_details=pipeline_result.grading.model_dump_json(),
         error_type=(
-            pipeline_result.diagnosis.error_type
-            if pipeline_result.diagnosis
-            else None
+            pipeline_result.diagnosis.error_type if pipeline_result.diagnosis else None
         ),
         diagnosis_details=(
             pipeline_result.diagnosis.model_dump_json()
             if pipeline_result.diagnosis
             else None
         ),
-        hint_level=(
-            pipeline_result.hint.hint_level
-            if pipeline_result.hint
-            else None
-        ),
-        hint_text=(
-            pipeline_result.hint.hint_text
-            if pipeline_result.hint
-            else None
-        ),
+        hint_level=(pipeline_result.hint.hint_level if pipeline_result.hint else None),
+        hint_text=(pipeline_result.hint.hint_text if pipeline_result.hint else None),
     )
     db.add(interaction)
     await db.flush()
@@ -280,12 +313,12 @@ async def submit_code(
     # Apply mastery logic (Phase 3)
     mastery_tracker = get_mastery_tracker()
     await mastery_tracker.update_mastery(
-        db, 
-        body.user_id, 
-        body.problem_id, 
-        pipeline_result.grading.score, 
+        db,
+        body.user_id,
+        body.problem_id,
+        pipeline_result.grading.score,
         attempt_count,
-        topic=problem.topic
+        topic=problem.topic,
     )
 
     # --- Update Persistence & State (Phase 3) ---------------------------
@@ -295,16 +328,22 @@ async def submit_code(
         await session_manager.clear_session(body.user_id, body.problem_id)
     else:
         # Save state for the next escalation
-        await session_manager.update_session(body.user_id, body.problem_id, {
-            "attempts": attempt_count,
-            "last_error_type": (
-                pipeline_result.diagnosis.error_type if pipeline_result.diagnosis else None
-            ),
-            "last_hint_level": (
-                pipeline_result.hint.hint_level if pipeline_result.hint else None
-            ),
-            "last_updated": datetime.now(timezone.utc).isoformat(),
-        })
+        await session_manager.update_session(
+            body.user_id,
+            body.problem_id,
+            {
+                "attempts": attempt_count,
+                "last_error_type": (
+                    pipeline_result.diagnosis.error_type
+                    if pipeline_result.diagnosis
+                    else None
+                ),
+                "last_hint_level": (
+                    pipeline_result.hint.hint_level if pipeline_result.hint else None
+                ),
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     # 2. Store in Long-term memory
     try:
@@ -314,7 +353,9 @@ async def submit_code(
             problem_id=body.problem_id,
             code=body.code,
             error_type=(
-                pipeline_result.diagnosis.error_type if pipeline_result.diagnosis else "none"
+                pipeline_result.diagnosis.error_type
+                if pipeline_result.diagnosis
+                else "none"
             ),
             hint_text=(
                 pipeline_result.hint.hint_text if pipeline_result.hint else "none"
@@ -332,3 +373,41 @@ async def submit_code(
     )
 
     return pipeline_result
+
+
+# ---------------------------------------------------------------------------
+# Debug endpoints for Streamlit Playground
+# ---------------------------------------------------------------------------
+
+
+@router.get("/debug/memory/redis/{user_id}/{problem_id}")
+async def get_redis_memory(user_id: int, problem_id: int):
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(user_id, problem_id)
+    return session
+
+
+@router.get("/debug/memory/chroma/{user_id}")
+async def get_chroma_memory(user_id: int):
+    try:
+        from backend.memory.long_term import get_long_term_memory
+
+        memory = get_long_term_memory()
+        collection = memory.collection
+        results = collection.get(where={"user_id": user_id})
+        return {"status": "success", "results": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/debug/execute_sql")
+async def debug_execute_sql(
+    query: str = Query(...), db: AsyncSession = Depends(get_db)
+):
+    from backend.tools.code_executor import execute_sql
+
+    try:
+        res = await execute_sql(query, db)
+        return res
+    except Exception as e:
+        return {"error": str(e)}
