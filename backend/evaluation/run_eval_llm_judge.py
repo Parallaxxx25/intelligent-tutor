@@ -20,7 +20,11 @@ import logging
 import sys
 from pathlib import Path
 
-from backend.evaluation.eval_dataset import EVAL_DATASET, EvalSample
+from backend.evaluation.eval_dataset import (
+    EVAL_DATASET,
+    EvalSample,
+    load_eval_dataset_from_csv,
+)
 from backend.evaluation.llm_judge import (
     OpenRouterJudge,
     format_judge_report_csv,
@@ -48,6 +52,7 @@ def _build_user_input(sample: EvalSample) -> str:
 def run_llm_judge_evaluation(
     output_format: str = "markdown",
     csv_path: str | None = None,
+    dataset_csv: str | None = None,
 ) -> str:
     """
     Run the LLM-as-a-judge evaluation.
@@ -55,6 +60,7 @@ def run_llm_judge_evaluation(
     Args:
         output_format: 'markdown', 'json', or 'csv'.
         csv_path: Optional file path for CSV export.
+        dataset_csv: Path to an evaluation CSV dataset. If None, uses default EVAL_DATASET.
 
     Returns:
         The formatted report string.
@@ -77,11 +83,15 @@ def run_llm_judge_evaluation(
     logger.info("Step 2: Building evaluation samples and generating hints...")
     eval_samples = []
 
-    for idx, sample in enumerate(EVAL_DATASET):
+    dataset_to_use = (
+        load_eval_dataset_from_csv(dataset_csv) if dataset_csv else EVAL_DATASET
+    )
+
+    for idx, sample in enumerate(dataset_to_use):
         logger.info(
             "Processing sample %d/%d: %s (Level %d)",
             idx + 1,
-            len(EVAL_DATASET),
+            len(dataset_to_use),
             sample.sample_id,
             sample.hint_level,
         )
@@ -184,12 +194,19 @@ def main() -> None:
         default=None,
         help="File path for CSV export (default: judge_results.csv)",
     )
+    parser.add_argument(
+        "--dataset-csv",
+        type=str,
+        default=None,
+        help="Path to a custom evaluation dataset CSV file (default: use internal EVAL_DATASET)",
+    )
 
     args = parser.parse_args()
 
     report = run_llm_judge_evaluation(
         output_format=args.output,
         csv_path=args.csv_path,
+        dataset_csv=args.dataset_csv,
     )
 
     print(report)

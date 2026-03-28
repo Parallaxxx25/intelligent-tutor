@@ -23,7 +23,11 @@ import logging
 import sys
 from pathlib import Path
 
-from backend.evaluation.eval_dataset import EVAL_DATASET, EvalSample
+from backend.evaluation.eval_dataset import (
+    EVAL_DATASET,
+    EvalSample,
+    load_eval_dataset_from_csv,
+)
 from backend.evaluation.ragas_evaluator import (
     RagasEvaluator,
     format_report_csv,
@@ -56,6 +60,7 @@ def run_evaluation(
     use_llm_metrics: bool = True,
     output_format: str = "markdown",
     csv_path: str | None = None,
+    dataset_csv: str | None = None,
 ) -> str:
     """
     Run the full RAGAS evaluation.
@@ -64,6 +69,7 @@ def run_evaluation(
         use_llm_metrics: Whether to use LLM-based RAGAS metrics.
         output_format: 'markdown', 'json', or 'csv'.
         csv_path: Optional file path for CSV export.
+        dataset_csv: Path to an evaluation CSV dataset. If None, uses default EVAL_DATASET.
 
     Returns:
         The formatted report string.
@@ -83,10 +89,13 @@ def run_evaluation(
         retrieve_relevant_context = None
 
     # Step 2: Build evaluation samples
-    logger.info("Step 2: Building %d evaluation samples...", len(EVAL_DATASET))
+    dataset_to_use = (
+        load_eval_dataset_from_csv(dataset_csv) if dataset_csv else EVAL_DATASET
+    )
+    logger.info("Step 2: Building %d evaluation samples...", len(dataset_to_use))
     eval_samples: list[dict] = []
 
-    for sample in EVAL_DATASET:
+    for sample in dataset_to_use:
         user_input = _build_user_input(sample)
 
         # Retrieve RAG contexts for this sample
@@ -188,6 +197,12 @@ def main() -> None:
         action="store_true",
         help="Skip LLM-based RAGAS metrics (faster, uses only custom metrics)",
     )
+    parser.add_argument(
+        "--dataset-csv",
+        type=str,
+        default=None,
+        help="Path to a custom evaluation dataset CSV file (default: use internal EVAL_DATASET)",
+    )
 
     args = parser.parse_args()
 
@@ -195,6 +210,7 @@ def main() -> None:
         use_llm_metrics=not args.no_llm,
         output_format=args.output,
         csv_path=args.csv_path,
+        dataset_csv=args.dataset_csv,
     )
 
     print(report)

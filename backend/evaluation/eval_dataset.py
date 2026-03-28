@@ -424,3 +424,27 @@ def get_hint_level_distribution() -> dict[int, int]:
     for s in EVAL_DATASET:
         dist[s.hint_level] = dist.get(s.hint_level, 0) + 1
     return dist
+import csv
+
+
+def load_eval_dataset_from_csv(csv_path: str) -> list[EvalSample]:
+    """Load evaluation dataset from a CSV file."""
+    dataset = []
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            dataset.append(EvalSample(
+                sample_id=row.get("sample_id", ""),
+                error_type=row.get("error_type", ""),
+                student_query=row.get("student_query", ""),
+                error_message=row.get("error_message", ""),
+                problem_description=row.get("problem_description", ""),
+                hint_level=int(row.get("hint_level", 1)),
+                attempt_count=int(row.get("attempt_count", 1)),
+                expected_hint_keywords=[k.strip() for k in row.get("expected_hint_keywords", "").split(",") if k.strip()],
+                expected_rag_topics=[k.strip() for k in row.get("expected_rag_topics", "").split(",") if k.strip()],
+                ground_truth_hint=row.get("ground_truth_hint", ""),
+                reference_answer=row.get("reference_answer", ""),
+                problematic_clause=row.get("problematic_clause", None)
+            ))
+    return dataset
