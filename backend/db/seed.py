@@ -13,6 +13,7 @@ Version: 2026-02-12  (SQL-focused rewrite)
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import sys
 from pathlib import Path
@@ -41,8 +42,14 @@ logger = logging.getLogger(__name__)
 # Reference-table DDL (run on the TargetDB)
 # ---------------------------------------------------------------------------
 
+import math
 import re
-_schema_path = Path(__file__).resolve().parents[2] / "SQL-Server-Sample-Database" / "BikeStores Sample Database - create objects.sql"
+
+_schema_path = (
+    Path(__file__).resolve().parents[2]
+    / "SQL-Server-Sample-Database"
+    / "BikeStores Sample Database - create objects.sql"
+)
 _schema_sql = _schema_path.read_text(encoding="utf-8")
 _schema_sql = _schema_sql.replace("INT IDENTITY (1, 1)", "SERIAL")
 _schema_sql = _schema_sql.replace("CREATE SCHEMA ", "CREATE SCHEMA IF NOT EXISTS ")
@@ -54,7 +61,11 @@ TARGET_DB_SCHEMA = _schema_sql
 # Reference data inserts
 # ---------------------------------------------------------------------------
 
-_data_path = Path(__file__).resolve().parents[2] / "SQL-Server-Sample-Database" / "BikeStores Sample Database - load data.sql"
+_data_path = (
+    Path(__file__).resolve().parents[2]
+    / "SQL-Server-Sample-Database"
+    / "BikeStores Sample Database - load data.sql"
+)
 _data_sql = _data_path.read_text(encoding="utf-8")
 _data_sql = re.sub(r"(?i)use BikeStores;", "", _data_sql)
 _data_sql = re.sub(r"(?i)SET\s+IDENTITY_INSERT\s+[^\s]+\s+(?:ON|OFF);?", "", _data_sql)
@@ -66,254 +77,11 @@ TARGET_DB_DATA = _data_sql
 # SQL problems
 # ---------------------------------------------------------------------------
 
-SEED_PROBLEMS: list[dict] = [
-    {
-        "title": "Basic SELECT — Customer Names",
-        "description": (
-            "Write a SQL query that returns the **first name** and **last name** "
-            "of all customers, ordered alphabetically by last name.\n\n"
-            "Expected columns: `first_name`, `last_name`"
-        ),
-        "difficulty": Difficulty.EASY,
-        "language": Language.SQL,
-        "topic": "SELECT basics",
-        "starter_code": "SELECT -- your columns here\nFROM sales.customers\nORDER BY -- ?;",
-        "test_cases": [
-            {
-                "expected_query": "SELECT first_name, last_name FROM sales.customers ORDER BY last_name",
-                "check_order": True,
-                "description": "All customers ordered by last name",
-            },
-        ],
-        "gold_standard": {
-            "solution_code": "SELECT first_name, last_name FROM sales.customers ORDER BY last_name;",
-            "explanation": (
-                "Use SELECT to choose the columns, FROM to specify the table, "
-                "and ORDER BY to sort the results alphabetically."
-            ),
-        },
-    },
-    {
-        "title": "WHERE Clause — Expensive Products",
-        "description": (
-            "Write a SQL query that returns the **product name** and **list price** "
-            "of products that cost more than $1,000. "
-            "Order the results by list price in descending order.\n\n"
-            "Expected columns: `product_name`, `list_price`"
-        ),
-        "difficulty": Difficulty.EASY,
-        "language": Language.SQL,
-        "topic": "WHERE filtering",
-        "starter_code": "SELECT -- columns\nFROM production.products\nWHERE -- condition\nORDER BY -- ?;",
-        "test_cases": [
-            {
-                "expected_query": (
-                    "SELECT product_name, list_price FROM production.products "
-                    "WHERE list_price > 1000 ORDER BY list_price DESC"
-                ),
-                "check_order": True,
-                "description": "Products with list_price > 1000, descending",
-            },
-        ],
-        "gold_standard": {
-            "solution_code": (
-                "SELECT product_name, list_price\n"
-                "FROM production.products\n"
-                "WHERE list_price > 1000\n"
-                "ORDER BY list_price DESC;"
-            ),
-            "explanation": (
-                "Use WHERE list_price > 1000 to filter rows, and "
-                "ORDER BY list_price DESC to sort from highest to lowest."
-            ),
-        },
-    },
-    {
-        "title": "INNER JOIN — Products & Brands",
-        "description": (
-            "Write a SQL query that returns each **product name** and its "
-            "**brand name**. Order by brand name, then by product name.\n\n"
-            "Expected columns: `product_name`, `brand_name`"
-        ),
-        "difficulty": Difficulty.MEDIUM,
-        "language": Language.SQL,
-        "topic": "JOINs",
-        "starter_code": (
-            "SELECT -- columns\n"
-            "FROM production.products p\n"
-            "-- JOIN ?\n"
-            "ORDER BY -- ?;"
-        ),
-        "test_cases": [
-            {
-                "expected_query": (
-                    "SELECT p.product_name, b.brand_name "
-                    "FROM production.products p "
-                    "JOIN production.brands b ON p.brand_id = b.brand_id "
-                    "ORDER BY b.brand_name, p.product_name"
-                ),
-                "check_order": True,
-                "description": "All products with brand names, sorted",
-            },
-        ],
-        "gold_standard": {
-            "solution_code": (
-                "SELECT p.product_name, b.brand_name\n"
-                "FROM production.products p\n"
-                "JOIN production.brands b ON p.brand_id = b.brand_id\n"
-                "ORDER BY b.brand_name, p.product_name;"
-            ),
-            "explanation": (
-                "Use INNER JOIN to combine products and brands on the "
-                "foreign key brand_id."
-            ),
-        },
-    },
-    {
-        "title": "GROUP BY — Brand Average Price",
-        "description": (
-            "Write a SQL query that returns each **brand name** and the "
-            "**average list price** of products in that brand. "
-            "Round the average to 2 decimal places. "
-            "Order by average price descending.\n\n"
-            "Expected columns: `brand_name`, `avg_price`"
-        ),
-        "difficulty": Difficulty.MEDIUM,
-        "language": Language.SQL,
-        "topic": "Aggregation",
-        "starter_code": (
-            "SELECT -- brand, aggregate\n"
-            "FROM production.products p\n"
-            "JOIN production.brands b ON p.brand_id = b.brand_id\n"
-            "GROUP BY -- ?\n"
-            "ORDER BY -- ?;"
-        ),
-        "test_cases": [
-            {
-                "expected_query": (
-                    "SELECT b.brand_name, ROUND(AVG(p.list_price), 2) AS avg_price "
-                    "FROM production.products p "
-                    "JOIN production.brands b ON p.brand_id = b.brand_id "
-                    "GROUP BY b.brand_name "
-                    "ORDER BY avg_price DESC"
-                ),
-                "check_order": True,
-                "description": "Average price per brand, descending",
-            },
-        ],
-        "gold_standard": {
-            "solution_code": (
-                "SELECT b.brand_name, ROUND(AVG(p.list_price), 2) AS avg_price\n"
-                "FROM production.products p\n"
-                "JOIN production.brands b ON p.brand_id = b.brand_id\n"
-                "GROUP BY b.brand_name\n"
-                "ORDER BY avg_price DESC;"
-            ),
-            "explanation": (
-                "Use GROUP BY b.brand_name to group products by brand, "
-                "AVG(p.list_price) to compute the mean, and ROUND() for formatting."
-            ),
-        },
-    },
-    {
-        "title": "Subquery — Above-Average Priced Products",
-        "description": (
-            "Write a SQL query that returns the **product name** and **list price** "
-            "of products that cost more than the overall average list price. "
-            "Order by list price descending.\n\n"
-            "Expected columns: `product_name`, `list_price`"
-        ),
-        "difficulty": Difficulty.MEDIUM,
-        "language": Language.SQL,
-        "topic": "Subqueries",
-        "starter_code": (
-            "SELECT -- columns\n"
-            "FROM production.products\n"
-            "WHERE list_price > (\n"
-            "    -- subquery here\n"
-            ")\n"
-            "ORDER BY list_price DESC;"
-        ),
-        "test_cases": [
-            {
-                "expected_query": (
-                    "SELECT product_name, list_price "
-                    "FROM production.products "
-                    "WHERE list_price > (SELECT AVG(list_price) FROM production.products) "
-                    "ORDER BY list_price DESC"
-                ),
-                "check_order": True,
-                "description": "Products priced above average",
-            },
-        ],
-        "gold_standard": {
-            "solution_code": (
-                "SELECT product_name, list_price\n"
-                "FROM production.products\n"
-                "WHERE list_price > (SELECT AVG(list_price) FROM production.products)\n"
-                "ORDER BY list_price DESC;"
-            ),
-            "explanation": (
-                "Use a scalar subquery (SELECT AVG(list_price) FROM production.products) "
-                "in the WHERE clause."
-            ),
-        },
-    },
-    {
-        "title": "HAVING — Stores with Many Orders",
-        "description": (
-            "Write a SQL query that returns the **store name** and the **number of orders** "
-            "placed at that store. Only include stores with more than 100 orders. "
-            "Order by number of orders descending.\n\n"
-            "Expected columns: `store_name`, `order_count`"
-        ),
-        "difficulty": Difficulty.HARD,
-        "language": Language.SQL,
-        "topic": "HAVING clause",
-        "starter_code": (
-            "SELECT -- store name, aggregate\n"
-            "FROM sales.stores s\n"
-            "JOIN sales.orders o ON s.store_id = o.store_id\n"
-            "GROUP BY -- ?\n"
-            "HAVING -- ?\n"
-            "ORDER BY -- ?;"
-        ),
-        "test_cases": [
-            {
-                "expected_query": (
-                    "SELECT s.store_name, COUNT(o.order_id) AS order_count "
-                    "FROM sales.stores s "
-                    "JOIN sales.orders o ON s.store_id = o.store_id "
-                    "GROUP BY s.store_name "
-                    "HAVING COUNT(o.order_id) > 100 "
-                    "ORDER BY order_count DESC"
-                ),
-                "check_order": True,
-                "description": "Stores with > 100 orders",
-            },
-        ],
-        "gold_standard": {
-            "solution_code": (
-                "SELECT s.store_name, COUNT(o.order_id) AS order_count\n"
-                "FROM sales.stores s\n"
-                "JOIN sales.orders o ON s.store_id = o.store_id\n"
-                "GROUP BY s.store_name\n"
-                "HAVING COUNT(o.order_id) > 100\n"
-                "ORDER BY order_count DESC;"
-            ),
-            "explanation": (
-                "JOIN stores and orders, GROUP BY store name, "
-                "use COUNT for the number of orders, and HAVING to filter groups "
-                "(WHERE filters rows BEFORE grouping, HAVING filters AFTER)."
-            ),
-        },
-    },
-]
-
 
 # ---------------------------------------------------------------------------
 # Seed functions
 # ---------------------------------------------------------------------------
+
 
 def split_sql_statements(sql: str) -> list[str]:
     """Safely split SQL by semicolon, ignoring those inside quotes or comments."""
@@ -322,21 +90,21 @@ def split_sql_statements(sql: str) -> list[str]:
     in_single_line_comment = False
     in_multi_line_comment = False
     current_statement = []
-    
+
     i = 0
     length = len(sql)
     while i < length:
         char = sql[i]
-        next_char = sql[i+1] if i + 1 < length else ''
-        
+        next_char = sql[i + 1] if i + 1 < length else ""
+
         if in_single_line_comment:
-            if char == '\n':
+            if char == "\n":
                 in_single_line_comment = False
             current_statement.append(char)
         elif in_multi_line_comment:
-            if char == '*' and next_char == '/':
+            if char == "*" and next_char == "/":
                 in_multi_line_comment = False
-                current_statement.append('*/')
+                current_statement.append("*/")
                 i += 1
             else:
                 current_statement.append(char)
@@ -351,28 +119,28 @@ def split_sql_statements(sql: str) -> list[str]:
             else:
                 current_statement.append(char)
         else:
-            if char == '-' and next_char == '-':
+            if char == "-" and next_char == "-":
                 in_single_line_comment = True
-                current_statement.append('--')
+                current_statement.append("--")
                 i += 1
-            elif char == '/' and next_char == '*':
+            elif char == "/" and next_char == "*":
                 in_multi_line_comment = True
-                current_statement.append('/*')
+                current_statement.append("/*")
                 i += 1
             elif char == "'":
                 in_string = True
                 current_statement.append(char)
-            elif char == ';':
+            elif char == ";":
                 statements.append("".join(current_statement).strip())
                 current_statement = []
             else:
                 current_statement.append(char)
         i += 1
-        
+
     last_stmt = "".join(current_statement).strip()
     if last_stmt:
         statements.append(last_stmt)
-        
+
     return [s for s in statements if s]
 
 
@@ -406,7 +174,10 @@ async def insert_reference_data(session: AsyncSession) -> None:
                 async with session.begin_nested():
                     await session.execute(text(statement))
             except Exception as e:
-                if 'unique constraint' not in str(e).lower() and 'duplicate' not in str(e).lower():
+                if (
+                    "unique constraint" not in str(e).lower()
+                    and "duplicate" not in str(e).lower()
+                ):
                     sys.stdout.write(f"\nError on statement {i}: {e}\n")
             sys.stdout.write(f"\r  Progress: {i}/{total} [{int(i/total*100)}%]   ")
             sys.stdout.flush()
@@ -415,11 +186,89 @@ async def insert_reference_data(session: AsyncSession) -> None:
     logger.info("Reference data inserted.")
 
 
-
-
 async def seed_problems(session: AsyncSession) -> None:
     """Seed SQL problems, test cases, and gold standards."""
-    for pdata in SEED_PROBLEMS:
+    csv_path = (
+        Path(__file__).resolve().parents[2]
+        / "sql-problem"
+        / "Practice-Assignment-Bike shop-2025.csv"
+    )
+
+    if not csv_path.exists():
+        logger.warning(f"CSV file not found: {csv_path}")
+        return
+
+    problems_to_create = []
+
+    with open(csv_path, encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            seq = str(row.get("ลำดับ", "")).strip()
+            topic = str(row.get("Topic Evaluated", "SQL")).strip()
+            if not seq or str(topic).lower() in ["nan", "none", ""]:
+                continue
+
+            # --- Practice Problem ---
+            prac_en = str(row.get("Practice Question (English)", "")).strip()
+            prac_th = str(row.get("Practice Question (Thai)", "")).strip()
+            prac_ans = str(row.get("Practice Answer", "")).strip()
+
+            if prac_th and prac_ans and prac_ans.lower() not in ["nan", "none", ""]:
+                problems_to_create.append(
+                    {
+                        "title": f"Practice {seq} - {topic.split( chr(10) )[0].strip()}",
+                        "description": f"{prac_en}\n\n{prac_th}",
+                        "topic": topic,
+                        "difficulty": Difficulty.EASY,
+                        "language": Language.SQL,
+                        "starter_code": "-- Write your query here\n",
+                        "test_cases": [
+                            {
+                                "expected_query": prac_ans,
+                                "check_order": "ORDER BY" in prac_ans.upper(),
+                                "description": "Practice expected output",
+                            }
+                        ],
+                        "gold_standard": {
+                            "solution_code": prac_ans,
+                            "explanation": "Practice solution.",
+                        },
+                    }
+                )
+
+            # --- Assignment Problem ---
+            assign_en = str(row.get("Assignment Question (English)", "")).strip()
+            assign_th = str(row.get("Assignment Question (Thai)", "")).strip()
+            assign_ans = str(row.get("Assignment Answer", "")).strip()
+
+            if (
+                assign_th
+                and assign_ans
+                and assign_ans.lower() not in ["nan", "none", ""]
+            ):
+                problems_to_create.append(
+                    {
+                        "title": f"Assignment {seq} - {topic.split( chr(10) )[0].strip()}",
+                        "description": f"{assign_en}\n\n{assign_th}",
+                        "topic": topic,
+                        "difficulty": Difficulty.EASY,  # Force EASY as requested
+                        "language": Language.SQL,
+                        "starter_code": "-- Write your query here\n",
+                        "test_cases": [
+                            {
+                                "expected_query": assign_ans,
+                                "check_order": "ORDER BY" in assign_ans.upper(),
+                                "description": "Assignment expected output",
+                            }
+                        ],
+                        "gold_standard": {
+                            "solution_code": assign_ans,
+                            "explanation": "Assignment solution.",
+                        },
+                    }
+                )
+
+    for pdata in problems_to_create:
         # Check if already exists
         result = await session.execute(
             select(Problem).where(Problem.title == pdata["title"])
@@ -444,7 +293,7 @@ async def seed_problems(session: AsyncSession) -> None:
             session.add(
                 TestCase(
                     problem_id=problem.id,
-                    input_data=tc["expected_query"],          # gold-standard query
+                    input_data=tc["expected_query"],  # gold-standard query
                     expected_output=tc.get("description", ""),
                     is_hidden=False,
                     order=i,
@@ -469,9 +318,7 @@ async def seed_problems(session: AsyncSession) -> None:
 
 async def seed_user(session: AsyncSession) -> None:
     """Create a demo student user if not exists."""
-    result = await session.execute(
-        select(User).where(User.email == "student@demo.com")
-    )
+    result = await session.execute(select(User).where(User.email == "student@demo.com"))
     if result.scalars().first():
         logger.info("Demo user already exists.")
         return
