@@ -6,25 +6,75 @@ A **multi-agent AI tutoring system** for personalized SQL education, built with 
 
 ## Architecture
 
+```mermaid
+graph TD
+    %% User
+    Student((🧑‍🎓 Student))
+
+    %% Frontend
+    subgraph Frontend["🖥️ Interaction Layer"]
+        UI["Streamlit Playground"]
+    end
+
+    %% Backend API
+    subgraph Backend["⚙️ API Layer"]
+        API["FastAPI REST & WebSockets"]
+    end
+
+    %% LangGraph Pipeline
+    subgraph Orchestration["🧠 Agent Orchestration (LangGraph)"]
+        direction LR
+        InputGuard["Input Guardrail"]
+        Grader["Grader Node"]
+        Diagnostician["Diagnostician Agent"]
+        Tutor["Tutor Agent"]
+        OutputGuard["Output Guardrail"]
+        
+        InputGuard -- "Validated Query" --> Grader
+        Grader -- "Incorrect Query" --> Diagnostician
+        Diagnostician -- "Error Context & Level" --> Tutor
+        Tutor -- "Draft Hint" --> OutputGuard
+        Grader -. "Query Correct" .-> Success(("✅ Success"))
+    end
+
+    %% Tracing & Observability
+    subgraph Observability["📊 Observability"]
+        LangSmith["LangSmith\n(Token & Cost Tracking)"]
+    end
+
+    %% LLM Layer
+    LLM{"Google Gemini\nCognitive Engine"}
+
+    %% Tools & DBs
+    subgraph DataMemory["💾 Data & Memory Layer"]
+        Redis[("Redis\n(Short-term Chat Session)")]
+        Postgres[("PostgreSQL\n(Target DB & Profiles)")]
+        Chroma[("ChromaDB\n(SQL Knowledge RAG)")]
+    end
+
+    %% Connections
+    Student <--> |Writes SQL & reads hints| UI
+    UI <--> API
+    API <--> |Manages Pipeline| Orchestration
+    API <--> |State Tracking| Redis
+
+    Grader <--> |Executes SQL via Code Executor| Postgres
+    Diagnostician <--> |Analyzes Error Types| LLM
+    Tutor <--> |Generates Scaffolded Hint| LLM
+    OutputGuard <--> |Formats & protects output| LLM
+    Tutor <--> |Retrieves SQL Concepts| Chroma
+
+    Orchestration -.- |Logs traces & metrics| LangSmith
 ```
-┌─────────────────────────────────────────────────────────┐
-│                 Interaction Layer                │
-│              FastAPI REST + WebSocket API                 │
-├─────────────────────────────────────────────────────────┤
-│            Agent Orchestration Layer              │
-│     ┌──────────┐  ┌──────────────┐  ┌───────────┐       │
-│     │  Grader  │→ │ Diagnostician│→ │   Tutor   │       │
-│     │  Agent   │  │    Agent     │  │   Agent   │       │
-│     └──────────┘  └──────────────┘  └───────────┘       │
-│              LangGraph StateGraph Pipeline                   │
-├─────────────────────────────────────────────────────────┤
-│              Cognitive Layer                   │
-│         Google Gemini  •  RAG  •  Guardrails             │
-├─────────────────────────────────────────────────────────┤
-│           Data & Memory Layer                  │
-│      PostgreSQL (Target + Profile)  •  Redis             │
-└─────────────────────────────────────────────────────────┘
-```
+
+### Component Breakdown
+1. **Interaction Layer (Streamlit)**: An interactive frontend playground where students can type SQL queries, view real-time chat history, and see long-term memory updates.
+2. **API & Session Layer (FastAPI & Redis)**: Handles robust networking, bridging the UI and the backend logic. It maintains short-term conversational session memory using Redis.
+3. **Agent Orchestration Layer (LangGraph)**: The multi-agent pipeline resolving student inquiries:
+    - **Grader Node**: Executes the user's query safely against the PostgreSQL database. If an error or incorrect result is returned, it passes the context to the next stage.
+    - **Diagnostician Agent**: Uses Gemini to categorize the SQL failure (e.g., `syntax_error`, `grouping_error`) determining precisely what concept the student is misunderstanding.
+    - **Tutor Agent**: Synthesizes the diagnosed error, the current problem's constraints, and appropriate pedagogical scaffolding (Levels 1-4) to generate a supportive, instructional hint.
+4. **Cognitive & RAG Layer (Gemini & ChromaDB)**: Google Gemini acts as the main cognitive engine, evaluating queries and drafting hints. To prevent hallucinations and enforce specific SQL syntaxes, ChromaDB is utilized as a vector database for Retrieval-Augmented Generation (RAG).
 
 ## SQL Error Taxonomy
 
