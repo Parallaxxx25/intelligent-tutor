@@ -66,7 +66,20 @@ with col1:
             if problem_data.get("test_cases"):
                 st.markdown("**Example Test Case:**")
                 tc = problem_data["test_cases"][0]
-                st.json({"Expected": json.loads(tc.get("expected_output", "{}"))})
+                expected_output_raw = tc.get("expected_output", "")
+                expected_output = expected_output_raw
+
+                # Some test cases store plain text descriptions, not JSON payloads.
+                if isinstance(expected_output_raw, str) and expected_output_raw.strip():
+                    try:
+                        expected_output = json.loads(expected_output_raw)
+                    except json.JSONDecodeError:
+                        expected_output = expected_output_raw
+
+                if isinstance(expected_output, (dict, list)):
+                    st.json({"Expected": expected_output})
+                else:
+                    st.write({"Expected": expected_output or "N/A"})
 
 # Column 2: SQL Sandbox
 with col2:
