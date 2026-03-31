@@ -2,7 +2,7 @@
 
 A **multi-agent AI tutoring system** for personalized SQL education, built with LangGraph, FastAPI, and Google Gemini. Provides automated query grading, SQL error diagnosis, and adaptive pedagogical hints through a 4-level scaffolding system.
 
-> **Master's Thesis Project** — An experimental platform for studying the effectiveness of AI-driven pedagogical scaffolding in SQL education.
+> **Bachelor's Thesis Project** — An experimental platform for studying the effectiveness of AI-driven pedagogical scaffolding in SQL education.
 
 ## Architecture
 
@@ -223,4 +223,4 @@ python -m backend.evaluation.run_eval_llm_judge --output csv --csv-path judge_re
 
 ## License
 
-This project is part of a master's thesis and is for academic use.
+This project is part of a bachelor's thesis and is for academic use.
