@@ -6,66 +6,7 @@ A **multi-agent AI tutoring system** for personalized SQL education, built with 
 
 ## Architecture
 
-```mermaid
-graph TD
-    %% User
-    Student((🧑‍🎓 Student))
-
-    %% Frontend
-    subgraph Frontend["🖥️ Interaction Layer"]
-        UI["Streamlit Playground"]
-    end
-
-    %% Backend API
-    subgraph Backend["⚙️ API Layer"]
-        API["FastAPI REST & WebSockets"]
-    end
-
-    %% LangGraph Pipeline
-    subgraph Orchestration["🧠 Agent Orchestration (LangGraph)"]
-        direction LR
-        InputGuard["Input Guardrail"]
-        Grader["Grader Node"]
-        Diagnostician["Diagnostician Agent"]
-        Tutor["Tutor Agent"]
-        OutputGuard["Output Guardrail"]
-        
-        InputGuard -- "Validated Query" --> Grader
-        Grader -- "Incorrect Query" --> Diagnostician
-        Diagnostician -- "Error Context & Level" --> Tutor
-        Tutor -- "Draft Hint" --> OutputGuard
-        Grader -. "Query Correct" .-> Success(("✅ Success"))
-    end
-
-    %% Tracing & Observability
-    subgraph Observability["📊 Observability"]
-        LangSmith["LangSmith\n(Token & Cost Tracking)"]
-    end
-
-    %% LLM Layer
-    LLM{"Google Gemini\nCognitive Engine"}
-
-    %% Tools & DBs
-    subgraph DataMemory["💾 Data & Memory Layer"]
-        Redis[("Redis\n(Short-term Chat Session)")]
-        Postgres[("PostgreSQL\n(Target DB & Profiles)")]
-        Chroma[("ChromaDB\n(SQL Knowledge RAG)")]
-    end
-
-    %% Connections
-    Student <--> |Writes SQL & reads hints| UI
-    UI <--> API
-    API <--> |Manages Pipeline| Orchestration
-    API <--> |State Tracking| Redis
-
-    Grader <--> |Executes SQL via Code Executor| Postgres
-    Diagnostician <--> |Analyzes Error Types| LLM
-    Tutor <--> |Generates Scaffolded Hint| LLM
-    OutputGuard <--> |Formats & protects output| LLM
-    Tutor <--> |Retrieves SQL Concepts| Chroma
-
-    Orchestration -.- |Logs traces & metrics| LangSmith
-```
+![Workflow Diagram](workflow-diagram.png)
 
 ### Component Breakdown
 1. **Interaction Layer (Streamlit)**: An interactive frontend playground where students can type SQL queries, view real-time chat history, and see long-term memory updates.
