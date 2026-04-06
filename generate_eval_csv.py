@@ -99,7 +99,9 @@ def main():
             if not q_text and not a_text:
                 continue
 
-            scenario = random.choice(error_scenarios)
+            scenario = random.choice(
+                error_scenarios
+            )  # 25% distribution across the four error types (syntax, column, table, grouping).
             student_query = scenario["mod"](a_text)
 
             # If the modifier didn't change anything, try to append an error

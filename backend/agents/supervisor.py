@@ -206,7 +206,7 @@ def run_pipeline_deterministic(
 
 
 # ---------------------------------------------------------------------------
-# LangGraph pipeline (replaces CrewAI, for Phase 2+)
+# LangGraph pipeline
 # ---------------------------------------------------------------------------
 
 

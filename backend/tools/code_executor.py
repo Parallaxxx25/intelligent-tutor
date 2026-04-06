@@ -141,7 +141,13 @@ def execute_sql(
         import psycopg2
         from psycopg2 import sql as psql  # noqa: F401
 
-        conn = psycopg2.connect(db_url, options=f"-c statement_timeout={timeout * 1000}")
+        # Set a configurable search path so queries don't fail when querying
+        # specific schemas without typing them out (e.g. production.products)
+        search_path = "public,production,sales"
+        conn = psycopg2.connect(
+            db_url,
+            options=f"-c statement_timeout={timeout * 1000} -c search_path={search_path}"
+        )
         conn.set_session(readonly=True, autocommit=False)
 
         try:
