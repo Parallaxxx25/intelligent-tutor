@@ -393,7 +393,9 @@ async def get_chroma_memory(user_id: int):
         from backend.memory.long_term import get_long_term_memory
 
         memory = get_long_term_memory()
-        collection = memory.collection
+        if not memory._collection:
+            memory.initialize()
+        collection = memory._collection
         results = collection.get(where={"user_id": user_id})
         return {"status": "success", "results": results}
     except Exception as e:
@@ -401,13 +403,11 @@ async def get_chroma_memory(user_id: int):
 
 
 @router.post("/debug/execute_sql")
-async def debug_execute_sql(
-    query: str = Query(...), db: AsyncSession = Depends(get_db)
-):
+def debug_execute_sql(query: str = Query(...)):
     from backend.tools.code_executor import execute_sql
 
     try:
-        res = await execute_sql(query, db)
+        res = execute_sql(query=query)
         return res
     except Exception as e:
-        return {"error": str(e)}
+        return {"error_message": str(e)}
