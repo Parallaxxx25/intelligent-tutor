@@ -1,15 +1,28 @@
 import csv
+import re
 import random
 import os
+
+RANDOM_SEED = 42
 
 input_file = "sql-problem/Practice-Assignment-Bike shop-2025.csv"
 output_file = "sql-problem/Evaluation-Dataset-Bike-shop-2025.csv"
 
+
+def _strip_semicolons(q: str) -> str:
+    """Strip trailing whitespace and semicolons from a SQL query."""
+    return q.rstrip("; \t\n\r")
+
+
 error_scenarios = [
     {
         "type": "syntax_error",
-        "mod": lambda q: (
-            q.replace("SELECT", "SELCT", 1) if "SELECT" in q else q + " SYNTAX ERROR"
+        "mod": lambda q: re.sub(
+            r"\bSELECT\b",
+            "SELCT",
+            _strip_semicolons(q),
+            count=1,
+            flags=re.IGNORECASE,
         ),
         "msg": 'syntax error at or near "SELCT"',
         "clause": "SELECT",
@@ -19,8 +32,12 @@ error_scenarios = [
     },
     {
         "type": "column_error",
-        "mod": lambda q: (
-            q.replace(" FROM", " , non_existent_col FROM", 1) if " FROM" in q else q
+        "mod": lambda q: re.sub(
+            r"\bFROM\b",
+            ", non_existent_col FROM",
+            _strip_semicolons(q),
+            count=1,
+            flags=re.IGNORECASE,
         ),
         "msg": 'column "non_existent_col" does not exist',
         "clause": "SELECT",
@@ -29,9 +46,13 @@ error_scenarios = [
         "hint": "Ensure all columns in your SELECT clause actually exist in the table schema.",
     },
     {
-        "type": "table_error",
-        "mod": lambda q: (
-            q.replace("FROM ", "FROM fake_schema.", 1) if "FROM " in q else q
+        "type": "relation_error",
+        "mod": lambda q: re.sub(
+            r"\bFROM\s+(\w)",
+            r"FROM fake_schema.\1",
+            _strip_semicolons(q),
+            count=1,
+            flags=re.IGNORECASE,
         ),
         "msg": "relation does not exist",
         "clause": "FROM",
@@ -40,11 +61,13 @@ error_scenarios = [
         "hint": "Check the table name and schema in your FROM clause.",
     },
     {
-        "type": "grouping_error",
-        "mod": lambda q: (
-            q.replace("GROUP BY", "ORDER BY", 1)
-            if "GROUP BY" in q
-            else q + " GROUP BY missing_col"
+        "type": "aggregation_error",
+        "mod": lambda q: re.sub(
+            r"\bSELECT\s+(?:DISTINCT\s+)?",
+            "SELECT COUNT(*), ",
+            _strip_semicolons(q),
+            count=1,
+            flags=re.IGNORECASE,
         ),
         "msg": "column must appear in the GROUP BY clause or be used in an aggregate function",
         "clause": "GROUP BY",
@@ -56,6 +79,8 @@ error_scenarios = [
 
 
 def main():
+    random.seed(RANDOM_SEED)
+
     if not os.path.exists(input_file):
         print(f"Input file not found: {input_file}")
         return
@@ -99,14 +124,13 @@ def main():
             if not q_text and not a_text:
                 continue
 
-            scenario = random.choice(
-                error_scenarios
-            )  # 25% distribution across the four error types (syntax, column, table, grouping).
+            # 25% distribution across the four error types (syntax, column, relation, aggregation).
+            scenario = random.choice(error_scenarios)
             student_query = scenario["mod"](a_text)
 
-            # If the modifier didn't change anything, try to append an error
-            if student_query == a_text:
-                student_query = a_text.rstrip(";") + " LIMIT -1;"
+            # If the modifier didn't change anything, corrupt the SELECT keyword as a safe fallback
+            if student_query == _strip_semicolons(a_text):
+                student_query = _strip_semicolons(a_text) + " INVALID_SYNTAX"
 
             writer.writerow(
                 {
