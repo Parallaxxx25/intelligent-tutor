@@ -22,6 +22,11 @@ Version: 2026-03-27
 
 from __future__ import annotations
 
+import os
+
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import json
 import pytest
 
@@ -80,6 +85,7 @@ def _make_test_cases_for_runner(test_cases: list[dict]) -> list[dict]:
 # 1. Real SQL Execution (code_executor)
 # ===================================================================
 
+
 class TestRealSQLExecution:
     """Test execute_sql against the real PostgreSQL BikeStores database."""
 
@@ -87,7 +93,9 @@ class TestRealSQLExecution:
         """A basic SELECT should succeed and return actual data."""
         from backend.tools.code_executor import execute_sql
 
-        result = execute_sql("SELECT first_name, last_name FROM sales.customers LIMIT 5")
+        result = execute_sql(
+            "SELECT first_name, last_name FROM sales.customers LIMIT 5"
+        )
 
         print("\n[PASS] Real SQL Execution -- Valid SELECT:")
         print(f"   Success  : {result['success']}")
@@ -167,6 +175,7 @@ class TestRealSQLExecution:
 # 2. Real SQL Test Runner (grading)
 # ===================================================================
 
+
 class TestRealSQLTestRunner:
     """Test run_sql_tests with actual database queries."""
 
@@ -201,14 +210,18 @@ class TestRealSQLTestRunner:
 
         assert result["passed"] is False
         assert result["score"] == 0.0
-        assert "Column mismatch" in (result["test_results"][0].get("error_message") or "")
+        assert "Column mismatch" in (
+            result["test_results"][0].get("error_message") or ""
+        )
 
     def test_wrong_order_fails(self) -> None:
         """Wrong ORDER BY should fail when check_order=True."""
         from backend.tools.test_runner import run_sql_tests
 
         test_cases = _make_test_cases_for_runner(PROBLEM_1_TEST_CASES)
-        wrong_order = "SELECT first_name, last_name FROM sales.customers ORDER BY first_name"
+        wrong_order = (
+            "SELECT first_name, last_name FROM sales.customers ORDER BY first_name"
+        )
         result = run_sql_tests(wrong_order, test_cases)
 
         print("\n[GRADE] Real Grading -- Wrong Order:")
@@ -238,6 +251,7 @@ class TestRealSQLTestRunner:
 # ===================================================================
 # 3. Real Error Classification + Hint Generation
 # ===================================================================
+
 
 class TestRealErrorClassificationAndHints:
     """Test classify_sql_error and generate_sql_hint with real grading results."""
@@ -299,8 +313,10 @@ class TestRealErrorClassificationAndHints:
                 problem_description=PROBLEM_1_DESC,
                 problematic_clause="SELECT",
             )
-            print(f"   Attempt {attempt}: Level {hint['hint_level']} | "
-                  f"Type: {hint['hint_type']} | Text: {_safe(hint['hint_text'][:80])}...")
+            print(
+                f"   Attempt {attempt}: Level {hint['hint_level']} | "
+                f"Type: {hint['hint_type']} | Text: {_safe(hint['hint_text'][:80])}..."
+            )
 
             assert hint["hint_level"] == attempt
 
@@ -308,6 +324,7 @@ class TestRealErrorClassificationAndHints:
 # ===================================================================
 # 4. Real RAG Retrieval (ChromaDB)
 # ===================================================================
+
 
 class TestRealRAGRetrieval:
     """Test ChromaDB-backed retrieval with real knowledge base."""
@@ -323,7 +340,9 @@ class TestRealRAGRetrieval:
         reset_knowledge_base()
         collection = initialize_knowledge_base(persist_dir=None)
 
-        print(f"\n[RAG] Real RAG -- Knowledge Base initialized: {collection.count()} docs")
+        print(
+            f"\n[RAG] Real RAG -- Knowledge Base initialized: {collection.count()} docs"
+        )
 
         results = retrieve_relevant_context(
             query="I'm getting a JOIN error, missing FROM clause entry",
@@ -334,7 +353,9 @@ class TestRealRAGRetrieval:
         print(f"   Query: 'JOIN error, missing FROM clause entry'")
         print(f"   Results returned: {len(results)}")
         for r in results:
-            print(f"   - Topic: {r['topic']} | Title: {r['title']} | Distance: {r['distance']:.4f}")
+            print(
+                f"   - Topic: {r['topic']} | Title: {r['title']} | Distance: {r['distance']:.4f}"
+            )
 
         assert len(results) > 0
         assert all("topic" in r and "content" in r for r in results)
@@ -371,6 +392,7 @@ class TestRealRAGRetrieval:
 # ===================================================================
 # 5. Real Deterministic Pipeline (end-to-end)
 # ===================================================================
+
 
 class TestRealDeterministicPipeline:
     """Full end-to-end deterministic pipeline with real tools."""
@@ -468,9 +490,11 @@ class TestRealDeterministicPipeline:
                 test_cases=PROBLEM_1_TEST_CASES,
                 attempt_count=attempt,
             )
-            print(f"   Attempt {attempt}: Hint Level {result.hint.hint_level} | "
-                  f"Type: {result.hint.hint_type} | "
-                  f"Text: {_safe(result.hint.hint_text[:60])}...")
+            print(
+                f"   Attempt {attempt}: Hint Level {result.hint.hint_level} | "
+                f"Type: {result.hint.hint_type} | "
+                f"Text: {_safe(result.hint.hint_text[:60])}..."
+            )
 
             assert result.hint.hint_level == attempt
 
@@ -478,6 +502,7 @@ class TestRealDeterministicPipeline:
 # ===================================================================
 # 6. Real LangGraph Pipeline (end-to-end)
 # ===================================================================
+
 
 class TestRealLangGraphPipeline:
     """Full end-to-end LangGraph pipeline with real tools."""
@@ -564,9 +589,11 @@ class TestRealLangGraphPipeline:
 # 7. Real LLM Pipeline (Gemini) -- skipped if no API key
 # ===================================================================
 
+
 def _has_google_api_key() -> bool:
     """Check if a real GOOGLE_API_KEY is configured."""
     from backend.config import get_settings
+
     key = get_settings().GOOGLE_API_KEY
     return bool(key and key.strip() and key != "your-key-here")
 
@@ -644,7 +671,9 @@ class TestRealLLMPipeline:
 
         print("\n[LLM] Real LLM Pipeline -- Injection Blocked:")
         print(f"   Overall Passed: {result.overall_passed}")
-        print(f"   Hint Text     : {_safe(result.hint.hint_text) if result.hint else 'None'}")
+        print(
+            f"   Hint Text     : {_safe(result.hint.hint_text) if result.hint else 'None'}"
+        )
 
         # Should fail (not valid SQL) and still get a hint via fallback
         assert result.overall_passed is False
@@ -652,7 +681,10 @@ class TestRealLLMPipeline:
     def test_llm_relation_error_with_rag(self) -> None:
         """LLM pipeline -- relation error triggers RAG context retrieval + Gemini hint."""
         from backend.agents.supervisor import run_pipeline_llm
-        from backend.rag.retriever import initialize_knowledge_base, reset_knowledge_base
+        from backend.rag.retriever import (
+            initialize_knowledge_base,
+            reset_knowledge_base,
+        )
 
         # Ensure RAG KB is initialized
         reset_knowledge_base()

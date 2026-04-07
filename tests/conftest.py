@@ -6,12 +6,18 @@ Version: 2026-02-12
 
 from __future__ import annotations
 
+import os
+
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import pytest
 
 
 # ---------------------------------------------------------------------------
 # Sample data fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def valid_sql_code() -> str:
