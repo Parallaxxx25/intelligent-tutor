@@ -1,55 +1,54 @@
 sample_id,error_type,student_query,error_message,problem_description,hint_level,attempt_count,expected_hint_keywords,expected_rag_topics,ground_truth_hint,reference_answer,problematic_clause
-eval_csv_01,grouping_error,SELECT * FROM products; GROUP BY missing_col,column must appear in the GROUP BY clause or be used in an aggregate function,Write an SQL statement to display all product information.,4,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,SELECT * FROM products;,GROUP BY
-eval_csv_02,grouping_error,SELECT email FROM staffs; GROUP BY missing_col,column must appear in the GROUP BY clause or be used in an aggregate function,Write an SQL statement to display the email addresses of all staffs,1,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,SELECT email FROM staffs;,GROUP BY
+eval_csv_01,syntax_error,SELCT * FROM products,"syntax error at or near ""SELCT""",Write an SQL statement to display all product information.,1,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.",SELECT * FROM products;,SELECT
+eval_csv_02,relation_error,SELECT email FROM fake_schema.staffs,relation does not exist,Write an SQL statement to display the email addresses of all staffs,2,1,"table,relation,FROM","Tables,FROM clause",Check the table name and schema in your FROM clause.,SELECT email FROM staffs;,FROM
 eval_csv_03,column_error,"SELECT brand_id, brand_name
-FROM brands LIMIT -1;","column ""non_existent_col"" does not exist",Write an SQL statement to display all brand codes and brand names.,1,1,"column,exist,schema","Schema,Columns,Tables",Ensure all columns in your SELECT clause actually exist in the table schema.,"SELECT brand_id, brand_name
+, non_existent_col FROM brands","column ""non_existent_col"" does not exist",Write an SQL statement to display all brand codes and brand names.,2,1,"column,exist,schema","Schema,Columns,Tables",Ensure all columns in your SELECT clause actually exist in the table schema.,"SELECT brand_id, brand_name
 FROM brands;",SELECT
-eval_csv_04,grouping_error,"SELECT item_id, product_id, quantity * list_price AS 'Total Price'
-FROM order_items; GROUP BY missing_col",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the item number, product code, and calculate the price of the product in the item number (quantity is mulitipled by list price). Name the last column 'Total Price'.",2,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT item_id, product_id, quantity * list_price AS 'Total Price'
-FROM order_items;",GROUP BY
-eval_csv_05,syntax_error,"SELCT
+eval_csv_04,syntax_error,"SELCT item_id, product_id, quantity * list_price AS 'Total Price'
+FROM order_items","syntax error at or near ""SELCT""","Write an SQL statement to display the item number, product code, and calculate the price of the product in the item number (quantity is mulitipled by list price). Name the last column 'Total Price'.",1,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT item_id, product_id, quantity * list_price AS 'Total Price'
+FROM order_items;",SELECT
+eval_csv_05,aggregation_error,"SELECT COUNT(*), Product_name,
+    Model_year,
+    2026 - Model_year AS 'Product Age'
+FROM
+    Products",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the product name, year the product was launched, and calculate the number of years the product has been on sale since 2026. Name the last column ""Number of Years Launched"".",1,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT
     Product_name,
     Model_year,
     2026 - Model_year AS 'Product Age'
 FROM
-    Products;","syntax error at or near ""SELCT""","Write an SQL statement to display the product name, year the product was launched, and calculate the number of years the product has been on sale since 2026. Name the last column ""Number of Years Launched"".",3,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT
-    Product_name,
-    Model_year,
-    2026 - Model_year AS 'Product Age'
-FROM
-    Products;",SELECT
-eval_csv_07,column_error,"SELECT product_name AS `Name of Product`, list_price AS 'Price'
-FROM products LIMIT -1;","column ""non_existent_col"" does not exist","Write an SQL statement to display the product name and price. Name the columns ""Name of Product"" and ""Price"" respectively.",2,1,"column,exist,schema","Schema,Columns,Tables",Ensure all columns in your SELECT clause actually exist in the table schema.,"SELECT product_name AS `Name of Product`, list_price AS 'Price'
+    Products;",GROUP BY
+eval_csv_07,syntax_error,"SELCT product_name AS `Name of Product`, list_price AS 'Price'
+FROM products","syntax error at or near ""SELCT""","Write an SQL statement to display the product name and price. Name the columns ""Name of Product"" and ""Price"" respectively.",1,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT product_name AS `Name of Product`, list_price AS 'Price'
 FROM products;",SELECT
-eval_csv_08,grouping_error,"SELECT
+eval_csv_08,column_error,"SELECT
+        Concat(First_name , "" "", Last_name)
+, non_existent_col FROM
+        Staffs","column ""non_existent_col"" does not exist","Write an SQL statement to display the first and last names of all staffs combined in a single column (separating first and last names with one space, e.g., Fabiola Jackson).",2,1,"column,exist,schema","Schema,Columns,Tables",Ensure all columns in your SELECT clause actually exist in the table schema.,"SELECT
         Concat(First_name , "" "", Last_name)
 FROM
-        Staffs; GROUP BY missing_col",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the first and last names of all staffs combined in a single column (separating first and last names with one space, e.g., Fabiola Jackson).",2,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT
-        Concat(First_name , "" "", Last_name)
-FROM
-        Staffs;",GROUP BY
+        Staffs;",SELECT
 eval_csv_09,syntax_error,"SELCT 
     CONCAT(first_name, ' ', last_name) AS full_name,
     email
-FROM customers;","syntax error at or near ""SELCT""","Write an SQL statement to display a list of all customers. Name the first column ""full_name"" containing the first name, separated by one space, followed by the last name. The second column should display the email address.",1,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT 
+FROM customers","syntax error at or near ""SELCT""","Write an SQL statement to display a list of all customers. Name the first column ""full_name"" containing the first name, separated by one space, followed by the last name. The second column should display the email address.",2,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT 
     CONCAT(first_name, ' ', last_name) AS full_name,
     email
 FROM customers;",SELECT
-eval_csv_10,column_error,"SELECT DISTINCT city, state
-FROM customers LIMIT -1;","column ""non_existent_col"" does not exist","Write an SQL statement to display the city and state where each customer resides, without showing duplicate rows.",4,1,"column,exist,schema","Schema,Columns,Tables",Ensure all columns in your SELECT clause actually exist in the table schema.,"SELECT DISTINCT city, state
-FROM customers;",SELECT
-eval_csv_11,column_error,"SELECT email
+eval_csv_10,aggregation_error,"SELECT COUNT(*), city, state
+FROM customers",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the city and state where each customer resides, without showing duplicate rows.",2,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT DISTINCT city, state
+FROM customers;",GROUP BY
+eval_csv_11,aggregation_error,"SELECT COUNT(*), email
 FROM stores
-ORDER BY email DESC LIMIT -1;","column ""non_existent_col"" does not exist","Write an SQL statement to display the email addresses of all stores, sorting the results in descending order.",3,1,"column,exist,schema","Schema,Columns,Tables",Ensure all columns in your SELECT clause actually exist in the table schema.,"SELECT email
+ORDER BY email DESC",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the email addresses of all stores, sorting the results in descending order.",3,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT email
 FROM stores
-ORDER BY email DESC;",SELECT
+ORDER BY email DESC;",GROUP BY
 eval_csv_12,syntax_error,"SELCT first_name, last_name
 FROM staffs
-ORDER BY first_name;","syntax error at or near ""SELCT""","Write an SQL statement to display the first and last names of all stafss, sorting the results by first name in ascending order.",3,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT first_name, last_name
+ORDER BY first_name","syntax error at or near ""SELCT""","Write an SQL statement to display the first and last names of all stafss, sorting the results by first name in ascending order.",2,1,"syntax,keyword,SELECT","SQL Syntax,Basic Queries","Check the spelling of your SQL keywords, particularly SELECT.","SELECT first_name, last_name
 FROM staffs
 ORDER BY first_name;",SELECT
-eval_csv_13,grouping_error,"SELECT store_name AS Store, phone AS Tel
+eval_csv_13,aggregation_error,"SELECT COUNT(*), store_name AS Store, phone AS Tel
 FROM stores
-ORDER BY state DESC, city; GROUP BY missing_col",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the names of all stores (name the first column ""Store"") and the phone numbers of those stores (name the second column ""Tel""), sorting the results by state name in descending order, and then alphabetically by city name in ascending order for stores in the same state.",4,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT store_name AS Store, phone AS Tel
+ORDER BY state DESC, city",column must appear in the GROUP BY clause or be used in an aggregate function,"Write an SQL statement to display the names of all stores (name the first column ""Store"") and the phone numbers of those stores (name the second column ""Tel""), sorting the results by state name in descending order, and then alphabetically by city name in ascending order for stores in the same state.",3,1,"group by,aggregate,function","Aggregation,GROUP BY",Make sure all non-aggregated columns are included in your GROUP BY clause.,"SELECT store_name AS Store, phone AS Tel
 FROM stores
 ORDER BY state DESC, city;",GROUP BY

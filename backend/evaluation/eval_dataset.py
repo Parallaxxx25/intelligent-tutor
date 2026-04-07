@@ -15,6 +15,7 @@ Version: 2026-03-27
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -424,7 +425,18 @@ def get_hint_level_distribution() -> dict[int, int]:
     for s in EVAL_DATASET:
         dist[s.hint_level] = dist.get(s.hint_level, 0) + 1
     return dist
-import csv
+
+
+def _safe_int(value: str, default: int, field_name: str, sample_id: str) -> int:
+    """Coerce *value* to int, falling back to *default* with a clear warning."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        print(
+            f"Warning: invalid {field_name!r} value {value!r} for sample {sample_id!r}; "
+            f"defaulting to {default}."
+        )
+        return default
 
 
 def load_eval_dataset_from_csv(csv_path: str) -> list[EvalSample]:
@@ -432,15 +444,16 @@ def load_eval_dataset_from_csv(csv_path: str) -> list[EvalSample]:
     dataset = []
     with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+        for row_num, row in enumerate(reader, start=2):  # row 1 is the header
+            sample_id = row.get("sample_id", f"row_{row_num}")
             dataset.append(EvalSample(
-                sample_id=row.get("sample_id", ""),
+                sample_id=sample_id,
                 error_type=row.get("error_type", ""),
                 student_query=row.get("student_query", ""),
                 error_message=row.get("error_message", ""),
                 problem_description=row.get("problem_description", ""),
-                hint_level=int(row.get("hint_level", 1)),
-                attempt_count=int(row.get("attempt_count", 1)),
+                hint_level=_safe_int(row.get("hint_level", ""), 1, "hint_level", sample_id),
+                attempt_count=_safe_int(row.get("attempt_count", ""), 1, "attempt_count", sample_id),
                 expected_hint_keywords=[k.strip() for k in row.get("expected_hint_keywords", "").split(",") if k.strip()],
                 expected_rag_topics=[k.strip() for k in row.get("expected_rag_topics", "").split(",") if k.strip()],
                 ground_truth_hint=row.get("ground_truth_hint", ""),
