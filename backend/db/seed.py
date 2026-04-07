@@ -42,7 +42,6 @@ logger = logging.getLogger(__name__)
 # Reference-table DDL (run on the TargetDB)
 # ---------------------------------------------------------------------------
 
-import math
 import re
 
 _schema_path = (
