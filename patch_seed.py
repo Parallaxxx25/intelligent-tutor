@@ -70,4 +70,12 @@ new_code = """def load_problems_from_csv() -> list[dict]:
                 
     return problems\n\n"""
 
-open('backend/db/seed.py', 'w', encoding='utf-8').write(content[:start] + new_code + content[end:])
+patched_content = content[:start] + new_code + content[end:]
+confirmation = input(
+    "This will overwrite backend/db/seed.py in the repository. "
+    "Type 'yes' to continue: "
+).strip()
+if confirmation != 'yes':
+    raise SystemExit("Aborted without modifying backend/db/seed.py.")
+
+open('backend/db/seed.py', 'w', encoding='utf-8').write(patched_content)
