@@ -84,15 +84,12 @@ with col1:
 # Column 2: SQL Sandbox
 with col2:
     st.header("💻 SQL Sandbox")
-    sql_input = st.text_area(
-        "Write your SQL query here:", height=250, value=st.session_state.sql_query
-    )
+    sql_input = st.text_area("Write your SQL query here:", height=250, key="sql_query")
 
     col_submit, col_hint = st.columns([1, 1])
 
     with col_submit:
         if st.button("Execute & Submit", type="primary", use_container_width=True):
-            st.session_state.sql_query = sql_input
             with st.spinner("Executing and grading..."):
                 # First run raw execution
                 raw_res = requests.post(
@@ -118,7 +115,6 @@ with col2:
         # Note: the pipeline automatically generates hints if an error happens.
         # But we also have a Give Hint button to explicitly show the generated hint.
         if st.button("Give Hint", use_container_width=True):
-            st.session_state.sql_query = sql_input
             with st.spinner("Generating hint..."):
                 payload = {
                     "user_id": USER_ID,
