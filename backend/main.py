@@ -55,6 +55,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("RAG init failed (non-fatal): %s", e)
 
+    # Initialize slide-material RAG knowledge base
+    try:
+        settings = get_settings()
+        if settings.SLIDE_RAG_ENABLED:
+            from backend.rag.slide_retriever import initialize_slide_kb
+            initialize_slide_kb()
+            logger.info("Slide-material RAG knowledge base initialised.")
+    except Exception as e:
+        logger.warning("Slide RAG init failed (non-fatal): %s", e)
+
     # Initialize memory components (Phase 3)
     try:
         session_manager = get_session_manager()

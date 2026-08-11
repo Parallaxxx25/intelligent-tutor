@@ -92,6 +92,22 @@ _PROFANITY_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(fuck|shit|damn|ass|bitch|bastard|crap)\b", re.IGNORECASE),
 ]
 
+# HR-schema teaching-slide leakage: slide_material RAG context (backend/rag/
+# slide_retriever.py) is drawn from Oracle lab decks against the HR sample
+# schema (employees/departments/locations), not the student's PostgreSQL
+# BikeStores schema. If one of these terms shows up in a hint it's almost
+# certainly slide leakage, not a legitimate BikeStores reference — checked
+# against SQL-Server-Sample-Database/*.sql to confirm no overlap (note
+# "manager_id" IS shared with BikeStores sales.staffs, so it's excluded).
+_HR_SCHEMA_TERMS = frozenset({
+    "employees", "departments", "locations", "job_id",
+    "department_id", "location_id", "hire_date", "job_history",
+})
+_HR_SCHEMA_LEAK_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _HR_SCHEMA_TERMS) + r")\b",
+    re.IGNORECASE,
+)
+
 # Harsh language in output
 _HARSH_LANGUAGE_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(stupid|idiot|dumb|terrible|awful|worst|hopeless|pathetic)\b", re.IGNORECASE),
@@ -191,9 +207,10 @@ def validate_output(
     Checks:
       1. Solution leakage (similarity to gold-standard query)
       2. Hallucination (referenced tables/columns don't exist)
-      3. Tone (no harsh criticism)
-      4. Length cap
-      5. Unsafe content
+      3. HR-schema teaching-slide leakage (Oracle lab-deck table/column names)
+      4. Tone (no harsh criticism)
+      5. Length cap
+      6. Unsafe content
 
     Args:
         llm_response: The LLM's generated response text.
@@ -223,7 +240,17 @@ def validate_output(
         for h in hallucinations:
             result.fail(h)
 
-    # 3. Tone enforcement
+    # 3. HR-schema teaching-slide leakage — runs unconditionally (unlike the
+    # hallucination check above, which only runs when schema_info is passed),
+    # so leakage is caught even when the caller has no schema_info to give.
+    hr_leak = _HR_SCHEMA_LEAK_PATTERN.search(llm_response)
+    if hr_leak:
+        result.fail(
+            f"Response references the course's HR teaching schema ('{hr_leak.group(1)}'), "
+            "not the student's BikeStores database."
+        )
+
+    # 4. Tone enforcement
     for pattern in _HARSH_LANGUAGE_PATTERNS:
         if pattern.search(llm_response):
             result.fail(f"Response contains harsh language: '{pattern.pattern}'")
@@ -233,7 +260,7 @@ def validate_output(
                 result.sanitized_content or llm_response,
             )
 
-    # 4. Length cap
+    # 5. Length cap
     max_len = settings.GUARDRAIL_MAX_RESPONSE_LENGTH
     if len(llm_response) > max_len:
         result.fail(
@@ -244,7 +271,7 @@ def validate_output(
         # Append truncation notice
         result.sanitized_content += "\n\n*(Response truncated for brevity.)*"
 
-    # 5. Profanity / unsafe content
+    # 6. Profanity / unsafe content
     for pattern in _PROFANITY_PATTERNS:
         if pattern.search(llm_response):
             result.fail("Response contains inappropriate language.")

@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = ""  # empty = in-memory (ephemeral)
     EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
+    # -- Slide-material RAG ---------------------------------------------------
+    SLIDE_MATERIAL_DIR: str = "slide-material"
+    CHROMA_SLIDE_COLLECTION: str = "slide_material"
+    LOCAL_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    USE_LOCAL_EMBEDDINGS: bool = True
+    SLIDE_RAG_ENABLED: bool = True
+    SLIDE_RAG_N_RESULTS: int = 2
+
     # -- Persistence & State (Phase 3) ----------------------------------------
     REDIS_SESSION_TTL: int = 86400  # 24 hours in seconds
     CHROMA_STUDENT_COLLECTION: str = "student_interactions"

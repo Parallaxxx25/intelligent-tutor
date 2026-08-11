@@ -207,6 +207,32 @@ class TestOutputGuardrails:
         )
         assert result.passed
 
+    def test_hr_schema_leakage_blocked(self):
+        """A hint naming the course slides' HR teaching schema (not BikeStores) fails."""
+        result = validate_output(
+            llm_response="Like in the employees table, check your JOIN condition against departments.",
+            gold_standard_query="",
+        )
+        assert not result.passed
+        assert any("HR teaching schema" in v for v in result.violations)
+
+    def test_hr_schema_leakage_runs_without_schema_info(self):
+        """Unlike the generic hallucination check, this check needs no schema_info."""
+        result = validate_output(
+            llm_response="The location_id column links to the locations table.",
+            gold_standard_query="",
+            schema_info=None,
+        )
+        assert not result.passed
+
+    def test_bikestores_manager_id_not_flagged(self):
+        """manager_id is shared with the real BikeStores schema (sales.staffs) — must not false-positive."""
+        result = validate_output(
+            llm_response="Check the manager_id column on the staffs table for a self-join.",
+            gold_standard_query="",
+        )
+        assert result.passed
+
     def test_sanitized_content_redacts_leaking_sql(self):
         """Verify that leaking SQL blocks are redacted in sanitized output."""
         gold = "SELECT name FROM employees WHERE salary > 50000"

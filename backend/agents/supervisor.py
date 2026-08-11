@@ -40,6 +40,63 @@ from backend.tools.test_runner import run_sql_tests
 
 logger = logging.getLogger(__name__)
 
+# Few-shot exemplars for LLM diagnosis (kept short to limit token cost).
+DIAGNOSIS_FEW_SHOT = """\
+EXAMPLES:
+
+Example 1
+STUDENT QUERY: SELECT product_name, list_price FROM products WHERE list_prices > 100;
+ERROR MESSAGE: column "list_prices" does not exist
+OUTPUT: {"error_type": "column_error", "error_message": "The column list_prices does not exist; the products table uses list_price (singular).", "problematic_clause": "WHERE", "severity": "low", "recommended_hint_level": 1, "pedagogical_rationale": "First attempt with a simple typo — pointing at the clause is enough."}
+
+Example 2
+STUDENT QUERY: SELECT b.brand_name, COUNT(*) FROM products p JOIN brands b ON p.brand_id = b.brand_id;
+ERROR MESSAGE: column "b.brand_name" must appear in the GROUP BY clause or be used in an aggregate function
+OUTPUT: {"error_type": "aggregation_error", "error_message": "brand_name is selected alongside COUNT(*) but never grouped, so Postgres cannot decide which row to show per group.", "problematic_clause": "GROUP BY", "severity": "medium", "recommended_hint_level": 2, "pedagogical_rationale": "Second attempt — naming the error category guides without solving it."}
+
+Example 3
+STUDENT QUERY: SELECT o.order_id, c.first_name FROM orders o, customers c;
+ERROR MESSAGE: (no error — wrong result set, 8000+ rows returned)
+OUTPUT: {"error_type": "join_error", "error_message": "The two tables are cross-joined with no join predicate, producing a Cartesian product instead of matching each order to its customer.", "problematic_clause": "FROM", "severity": "high", "recommended_hint_level": 3, "pedagogical_rationale": "Third attempt on a conceptual gap — a parallel example is warranted."}
+"""
+
+# Few-shot exemplars for hint generation, one per scaffolding level.
+HINT_FEW_SHOT = """\
+EXAMPLES (note how specificity grows with the level — never past a template):
+
+Example — LEVEL 1 (Attention)
+DIAGNOSIS: column_error on WHERE
+HINT: Nice work getting the query structure down! Take another look at your WHERE clause — one of the column names there doesn't match what the table actually offers. What does the products table call its price column?
+
+Example — LEVEL 2 (Category)
+DIAGNOSIS: aggregation_error on GROUP BY
+HINT: You're close! This is a grouping problem: whenever you mix a plain column with an aggregate like COUNT(), SQL needs to know how to bucket the rows. Every non-aggregated column in your SELECT has to appear in GROUP BY. Which column in your SELECT isn't aggregated?
+
+Example — LEVEL 3 (Concept)
+DIAGNOSIS: join_error on FROM
+HINT: Good instinct pulling from both tables. Here's the same idea on a different pair — counting staff per store:
+```sql
+SELECT s.store_name, COUNT(*)
+FROM staffs st
+JOIN stores s ON st.store_id = s.store_id
+GROUP BY s.store_name;
+```
+Notice the ON clause states which columns must match. What column do your two tables share?
+
+Example — LEVEL 4 (Solution Scaffold)
+DIAGNOSIS: subquery_error on WHERE
+HINT: Let's build it together — fill in the blanks:
+```sql
+SELECT product_name
+FROM products
+WHERE list_price > (
+    SELECT ___(list_price)
+    FROM ___
+);
+```
+The inner query has to collapse to a single value before the comparison works. Which aggregate gives you that?
+"""
+
 
 def _format_sql_query(query: str) -> str:
     """Format the student's query using sqlglot if syntax is valid."""
@@ -526,11 +583,41 @@ def run_pipeline_llm(
         error_type=classification.error_type,
         n_results=3,
     )
+
+    # Course-grounded slide context (DB66 lab decks) — additive to the curated
+    # KB above, not a replacement. Never allowed to fail the pipeline: any
+    # error here just means the hint loses slide citations, same fallback
+    # contract as the curated RAG call.
+    from backend.config import get_settings
+
+    settings = get_settings()
+    slide_context: list[dict[str, Any]] = []
+    if settings.SLIDE_RAG_ENABLED:
+        try:
+            from backend.rag.slide_retriever import search_slides
+
+            slide_context = search_slides(
+                query=rag_query,
+                error_type=classification.error_type,
+                n_results=settings.SLIDE_RAG_N_RESULTS,
+            )
+        except Exception as e:
+            logger.warning("Slide RAG retrieval failed (non-fatal): %s", e)
+
+    combined_context = rag_context + slide_context
     rag_text = (
-        "\n\n".join(f"### {doc['title']}\n{doc['content']}" for doc in rag_context)
-        if rag_context
+        "\n\n".join(f"### {doc['title']}\n{doc['content']}" for doc in combined_context)
+        if combined_context
         else "No additional SQL reference available."
     )
+    if slide_context:
+        rag_text += (
+            "\n\nNote: excerpts citing 'DB66 LAB' come from the student's own course "
+            "slides, which teach Oracle SQL against a different practice schema "
+            "(employees/departments/locations). Use them only to explain the underlying "
+            "concept and cite the slide — never name those tables/columns; the student's "
+            "database is PostgreSQL with the BikeStores schema."
+        )
 
     # Use Gemini to produce a richer diagnosis
     try:
@@ -554,6 +641,8 @@ def run_pipeline_llm(
 
         diagnosis_prompt = (
             f"You are an expert SQL diagnostician. Analyse this student's SQL error.\n\n"
+            f"{DIAGNOSIS_FEW_SHOT}\n"
+            f"NOW ANALYSE THIS CASE:\n\n"
             f"STUDENT QUERY:\n```sql\n{submission.code}\n```\n\n"
             f"ERROR MESSAGE: {classification.error_message}\n"
             f"RULE-BASED CLASSIFICATION: {classification.error_type}\n"
@@ -646,7 +735,9 @@ def run_pipeline_llm(
             f"- Be encouraging — use positive framing\n"
             f"- Keep the hint concise (2-4 sentences for levels 1-2, up to a paragraph for 3-4)\n"
             f"- Use SQL code blocks for any query snippets\n"
-            f"- End with a follow-up question to promote reflection\n"
+            f"- End with a follow-up question to promote reflection\n\n"
+            f"{HINT_FEW_SHOT}\n"
+            f"NOW WRITE THE LEVEL {hint_level} HINT FOR THE STUDENT ABOVE:\n"
         )
 
         llm_hint_text = generate_response(
