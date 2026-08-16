@@ -2,10 +2,11 @@
 FastAPI API routes for the Intelligent Tutoring System.
 
 Endpoints:
-  GET  /api/health          — Health check
-  GET  /api/problems        — List all problems
-  GET  /api/problems/{id}   — Get problem details with visible test cases
-  POST /api/submit          — Submit code for grading + hints
+  GET    /api/health              — Health check (Postgres/Redis/Chroma)
+  GET    /api/problems            — List all problems
+  GET    /api/problems/{id}       — Get problem details with visible test cases
+  POST   /api/submit              — Submit code for grading + hints (requires X-API-Key if configured)
+  DELETE /api/users/{id}/data     — Erase a student's data (requires X-API-Key if configured)
 
 Version: 2026-02-12
 """
@@ -28,6 +29,7 @@ from backend.agents.supervisor import (
     run_pipeline_deterministic,
     run_pipeline_llm,
 )
+from backend.api.auth import require_api_key
 from backend.config import get_settings
 from backend.db.database import get_db
 from backend.api.websocket import manager as ws_manager
@@ -40,6 +42,7 @@ from backend.db.models import (
 )
 from backend.db.schemas import (
     CodeSubmission,
+    ComponentHealth,
     HealthResponse,
     ProblemListItem,
     ProblemResponse,
@@ -69,12 +72,51 @@ class PipelineMode(str, Enum):
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
-    """Return service health status."""
+async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
+    """Report Postgres/Redis/Chroma liveness and the embedding fallback rate."""
+    from sqlalchemy import text
+
+    # --- Postgres ---------------------------------------------------------
+    try:
+        await db.execute(text("SELECT 1"))
+        postgres = ComponentHealth(status="up")
+    except Exception as e:
+        postgres = ComponentHealth(status="down", detail=str(e))
+
+    # --- Redis --------------------------------------------------------------
+    session_manager = get_session_manager()
+    redis_ok = await session_manager.ping()
+    redis = ComponentHealth(status="up" if redis_ok else "down")
+
+    # --- Chroma (long-term memory) ------------------------------------------
+    try:
+        ltm = get_long_term_memory()
+        if ltm._collection is None:
+            await run_in_threadpool(ltm.initialize)
+        if ltm._collection is not None:
+            await run_in_threadpool(ltm._client.heartbeat)
+            chroma = ComponentHealth(status="up")
+        else:
+            chroma = ComponentHealth(status="down", detail="collection not initialized")
+    except Exception as e:
+        chroma = ComponentHealth(status="down", detail=str(e))
+
+    from backend.rag.retriever import GoogleEmbeddingFunction
+
+    embedding_fallback_rate = GoogleEmbeddingFunction.get_stats()["fallback_rate"]
+
+    overall = "unhealthy" if postgres.status != "up" else (
+        "degraded" if redis.status != "up" or chroma.status != "up" else "healthy"
+    )
+
     return HealthResponse(
-        status="healthy",
+        status=overall,
         version="0.1.0",
         timestamp=datetime.now(timezone.utc),
+        postgres=postgres,
+        redis=redis,
+        chroma=chroma,
+        embedding_fallback_rate=embedding_fallback_rate,
     )
 
 
@@ -127,7 +169,11 @@ async def get_problem(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/submit", response_model=SubmissionResponse)
+@router.post(
+    "/submit",
+    response_model=SubmissionResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def submit_code(
     body: CodeSubmission,
     db: AsyncSession = Depends(get_db),
@@ -345,10 +391,11 @@ async def submit_code(
             },
         )
 
-    # 2. Store in Long-term memory
+    # 2. Store in Long-term memory (sync ChromaDB call — off the event loop)
     try:
         ltm = get_long_term_memory()
-        ltm.store_interaction(
+        await run_in_threadpool(
+            ltm.store_interaction,
             user_id=body.user_id,
             problem_id=body.problem_id,
             code=body.code,
@@ -376,33 +423,102 @@ async def submit_code(
 
 
 # ---------------------------------------------------------------------------
-# Debug endpoints for Streamlit Playground
+# Delete-my-data
 # ---------------------------------------------------------------------------
 
 
-@router.get("/debug/memory/redis/{user_id}/{problem_id}")
+@router.delete("/users/{user_id}/data", dependencies=[Depends(require_api_key)])
+async def delete_user_data(user_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Erase a student's data everywhere it's stored: Postgres (account +
+    interaction/progress history, cascade-deleted with the user row), Redis
+    (any live session hashes), and Chroma (embedded long-term-memory
+    interactions).
+    """
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalars().first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found.",
+        )
+
+    await db.delete(user)  # ON DELETE CASCADE clears student_progress + interaction_history
+
+    session_manager = get_session_manager()
+    redis_deleted = await session_manager.clear_user_sessions(user_id)
+
+    chroma_deleted = 0
+    try:
+        ltm = get_long_term_memory()
+        if ltm._collection is None:
+            await run_in_threadpool(ltm.initialize)
+        if ltm._collection is not None:
+            existing = await run_in_threadpool(
+                ltm._collection.get, where={"user_id": user_id}
+            )
+            ids = existing.get("ids") or []
+            if ids:
+                await run_in_threadpool(ltm._collection.delete, ids=ids)
+                chroma_deleted = len(ids)
+    except Exception as e:
+        logger.warning("Could not purge Chroma data for user %d: %s", user_id, e)
+
+    logger.info(
+        "Deleted all data for user %d (redis_sessions=%d, chroma_docs=%d)",
+        user_id, redis_deleted, chroma_deleted,
+    )
+
+    return {
+        "status": "deleted",
+        "user_id": user_id,
+        "redis_sessions_deleted": redis_deleted,
+        "chroma_documents_deleted": chroma_deleted,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Debug endpoints for Streamlit Playground
+# ---------------------------------------------------------------------------
+# Dev-only: 404 unless DEBUG is set, and still gated by the API key when one
+# is configured. These expose raw session/vector-store contents and an
+# unrestricted SQL execution hole — never enable DEBUG in a reachable deploy.
+
+
+async def _require_debug_mode() -> None:
+    if not get_settings().DEBUG:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+
+_debug_dependencies = [Depends(_require_debug_mode), Depends(require_api_key)]
+
+
+@router.get(
+    "/debug/memory/redis/{user_id}/{problem_id}",
+    dependencies=_debug_dependencies,
+)
 async def get_redis_memory(user_id: int, problem_id: int):
     session_manager = get_session_manager()
     session = await session_manager.get_session(user_id, problem_id)
     return session
 
 
-@router.get("/debug/memory/chroma/{user_id}")
+@router.get("/debug/memory/chroma/{user_id}", dependencies=_debug_dependencies)
 async def get_chroma_memory(user_id: int):
     try:
         from backend.memory.long_term import get_long_term_memory
 
         memory = get_long_term_memory()
         if not memory._collection:
-            memory.initialize()
+            await run_in_threadpool(memory.initialize)
         collection = memory._collection
-        results = collection.get(where={"user_id": user_id})
+        results = await run_in_threadpool(collection.get, where={"user_id": user_id})
         return {"status": "success", "results": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
-@router.post("/debug/execute_sql")
+@router.post("/debug/execute_sql", dependencies=_debug_dependencies)
 def debug_execute_sql(query: str = Query(...)):
     from backend.tools.code_executor import execute_sql
 

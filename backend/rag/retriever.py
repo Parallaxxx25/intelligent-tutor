@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from typing import Any
 
 import chromadb
@@ -49,7 +50,17 @@ class GoogleEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
 
     Falls back to a simple hash-based embedding if the API is unavailable,
     so that tests and offline development still work.
+
+    Call counts are tracked at the class level (shared across every instance
+    — retriever.py, slide_retriever.py, and long_term.py each create their
+    own) so ``/api/health`` can report a single fallback rate for the whole
+    process; a persistently high rate means real embeddings aren't happening
+    and retrieval quality has silently degraded to hash-based noise.
     """
+
+    _lock = threading.Lock()
+    _total_calls = 0
+    _fallback_calls = 0
 
     def __init__(self, model_name: str = "models/gemini-embedding-001") -> None:
         self.model_name = model_name
@@ -67,6 +78,9 @@ class GoogleEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
+        with GoogleEmbeddingFunction._lock:
+            GoogleEmbeddingFunction._total_calls += 1
+
         if self._client:
             try:
                 response = self._client.models.embed_content(
@@ -79,7 +93,20 @@ class GoogleEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
                 logger.warning("Embedding API failed (%s) — using fallback.", e)
 
         # Fallback: deterministic hash-based pseudo-embeddings (768-dim)
+        with GoogleEmbeddingFunction._lock:
+            GoogleEmbeddingFunction._fallback_calls += 1
         return [self._hash_embed(text) for text in input]
+
+    @classmethod
+    def get_stats(cls) -> dict[str, float]:
+        """Process-wide embedding call counts and fallback rate, for health checks."""
+        with cls._lock:
+            total, fallback = cls._total_calls, cls._fallback_calls
+        return {
+            "total_calls": total,
+            "fallback_calls": fallback,
+            "fallback_rate": (fallback / total) if total else 0.0,
+        }
 
     @staticmethod
     def _hash_embed(text: str, dim: int = 768) -> list[float]:

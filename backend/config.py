@@ -56,7 +56,10 @@ class Settings(BaseSettings):
     CODE_EXEC_MAX_MEMORY_MB: int = 256
 
     # -- RAG (Phase 2) -------------------------------------------------------
-    CHROMA_PERSIST_DIR: str = ""  # empty = in-memory (ephemeral)
+    # Persistent by default — an empty string reverts to in-memory (ephemeral,
+    # wipes RAG docs + long-term memory on every restart). Set "" explicitly
+    # in tests that need a clean, throwaway store.
+    CHROMA_PERSIST_DIR: str = "./.chroma"
     EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
     # -- Slide-material RAG ---------------------------------------------------
@@ -75,6 +78,12 @@ class Settings(BaseSettings):
     GUARDRAIL_MAX_QUERY_LENGTH: int = 5000
     GUARDRAIL_MAX_RESPONSE_LENGTH: int = 3000
     DEFAULT_PIPELINE_MODE: str = "deterministic"  # "deterministic" or "llm"
+
+    # -- Security --------------------------------------------------------------
+    # Empty = auth disabled (local dev). Set to require the X-API-Key header
+    # on /api/submit and /api/debug/* and to enable /api/users/{id}/data deletion.
+    API_KEY: str = ""
+    INTERACTION_RETENTION_DAYS: int = 180
 
     # -- Application ---------------------------------------------------------
     ENV: str = "development"

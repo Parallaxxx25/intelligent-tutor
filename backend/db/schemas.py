@@ -175,9 +175,27 @@ class SubmissionResponse(BaseModel):
     timestamp: datetime
 
 
+class ComponentHealth(BaseModel):
+    """Health of a single backing service."""
+
+    status: str = Field(..., description="'up', 'down', or 'not_configured'")
+    detail: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
-    """Health check response."""
+    """Health check response — reports each backing store independently.
+
+    ``status`` is 'unhealthy' only if Postgres (required for grading/auth)
+    is down; Redis/Chroma failures degrade gracefully per the app's design,
+    so they report 'degraded' rather than failing the whole check.
+    """
 
     status: str = "healthy"
     version: str = "0.1.0"
     timestamp: datetime
+    postgres: ComponentHealth
+    redis: ComponentHealth
+    chroma: ComponentHealth
+    embedding_fallback_rate: float = Field(
+        default=0.0, description="Share of embedding calls that used the hash fallback"
+    )

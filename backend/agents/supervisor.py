@@ -610,6 +610,28 @@ def run_pipeline_llm(
         if combined_context
         else "No additional SQL reference available."
     )
+
+    # Long-term memory — this student's own past struggles, for personalization
+    # (e.g. "keeps missing GROUP BY"). Read-only here; the interaction is
+    # written back to LTM by the API layer after the pipeline returns. Never
+    # allowed to fail the pipeline — same fallback contract as the RAG calls.
+    past_struggles_text = ""
+    try:
+        from backend.memory.long_term import get_long_term_memory
+
+        past_struggles = get_long_term_memory().retrieve_similar_struggles(
+            user_id=submission.user_id,
+            query=rag_query,
+            n_results=3,
+        )
+        if past_struggles:
+            past_struggles_text = "\n\n".join(
+                f"- {s['metadata'].get('error_type', 'unknown')} error (past attempt): "
+                f"{s['content'][:300]}"
+                for s in past_struggles
+            )
+    except Exception as e:
+        logger.warning("LTM retrieval failed (non-fatal): %s", e)
     if slide_context:
         rag_text += (
             "\n\nNote: excerpts citing 'DB66 LAB' come from the student's own course "
@@ -730,7 +752,14 @@ def run_pipeline_llm(
             f"ATTEMPT: {attempt_count}\n"
             f"REQUIRED HINT LEVEL: {hint_level} — {level_descriptions.get(hint_level, '')}\n\n"
             f"RELEVANT SQL CONCEPTS:\n{rag_text}\n\n"
-            f"RULES:\n"
+            + (
+                f"THIS STUDENT'S PAST STRUGGLES (use only if a pattern is relevant — "
+                f"e.g. call out a recurring mistake — never just repeat this list):\n"
+                f"{past_struggles_text}\n\n"
+                if past_struggles_text
+                else ""
+            )
+            + f"RULES:\n"
             f"- NEVER reveal the complete SQL solution\n"
             f"- Be encouraging — use positive framing\n"
             f"- Keep the hint concise (2-4 sentences for levels 1-2, up to a paragraph for 3-4)\n"
