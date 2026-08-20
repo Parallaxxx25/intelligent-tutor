@@ -27,12 +27,11 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
-from chromadb.config import Settings as ChromaSettings
 from rank_bm25 import BM25Okapi
 
 from backend.config import get_settings
 from backend.rag.embeddings import FastEmbedEmbeddingFunction
-from backend.rag.retriever import GoogleEmbeddingFunction
+from backend.rag.retriever import GoogleEmbeddingFunction, get_chroma_client
 from backend.rag.slide_ingest import chunk_all_decks
 
 logger = logging.getLogger(__name__)
@@ -42,6 +41,7 @@ RRF_K = 60  # standard RRF damping constant
 
 _client: chromadb.ClientAPI | None = None
 _collection: chromadb.Collection | None = None
+_persist_dir: str = ""  # "" = in-memory
 _query_embedder: Any = None  # embedding function in "query" mode
 
 # In-process BM25 index, rebuilt from whatever the collection holds after
@@ -88,17 +88,15 @@ def initialize_slide_kb(
     `slide-material/*.pdf` if empty, and rebuild the in-process BM25 index
     from whatever the collection ends up holding.
     """
-    global _client, _collection, _query_embedder, _bm25, _bm25_ids, _bm25_docs
+    global _client, _collection, _persist_dir, _query_embedder, _bm25, _bm25_ids, _bm25_docs
 
     settings = get_settings()
     chroma_dir = persist_dir if persist_dir is not None else settings.CHROMA_PERSIST_DIR
 
-    if chroma_dir:
-        _client = chromadb.Client(
-            ChromaSettings(anonymized_telemetry=False, is_persistent=True, persist_directory=chroma_dir)
-        )
-    else:
-        _client = chromadb.Client(ChromaSettings(anonymized_telemetry=False, is_persistent=False))
+    # Shared client — a second chromadb.Client() on the same directory would
+    # invalidate the sql_knowledge collection handle held by retriever.py.
+    _client = get_chroma_client(chroma_dir)
+    _persist_dir = chroma_dir
 
     passage_fn, query_fn = _make_embedding_functions(settings)
     _query_embedder = query_fn
@@ -277,15 +275,23 @@ def get_slide_collection() -> chromadb.Collection | None:
     return _collection
 
 
-def reset_slide_kb() -> None:
-    """Reset all module-level state (for testing)."""
-    global _client, _collection, _query_embedder, _bm25, _bm25_ids, _bm25_docs
-    if _client and _collection:
+def reset_slide_kb(drop_persisted: bool = False) -> None:
+    """
+    Reset all module-level state (for testing).
+
+    Only drops the collection when it lives in memory. Deleting a *persisted*
+    collection throws away a real seeded index (re-ingesting the decks takes
+    minutes), so that needs ``drop_persisted=True`` — as `build_slide_index
+    --rebuild` passes.
+    """
+    global _client, _collection, _persist_dir, _query_embedder, _bm25, _bm25_ids, _bm25_docs
+    if _client and _collection and (not _persist_dir or drop_persisted):
         try:
             _client.delete_collection(_collection.name)
         except Exception:
             pass
     _client = None
     _collection = None
+    _persist_dir = ""
     _query_embedder = None
     _bm25, _bm25_ids, _bm25_docs = None, [], []

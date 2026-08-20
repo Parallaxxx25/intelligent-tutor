@@ -69,7 +69,11 @@ class TestHealthEndpoint:
         response = await client.get("/api/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        # Postgres is the only hard dependency; Redis/Chroma degrade the
+        # status without failing the app. ASGITransport skips the lifespan,
+        # so the RAG collection is legitimately uninitialised here.
+        assert data["postgres"]["status"] == "up"
+        assert data["status"] != "unhealthy"
         assert "version" in data
         assert "timestamp" in data
 
@@ -123,7 +127,7 @@ class TestSubmitEndpoint:
             json={
                 "user_id": 1,
                 "problem_id": 1,
-                "code": "SELECT first_name, last_name FROM sales.customers ORDER BY last_name;",
+                "code": "SELECT * FROM products;",
                 "language": "sql",
             },
         )

@@ -446,6 +446,7 @@ def run_pipeline_llm(
     attempt_count: int = 1,
     gold_standard_query: str = "",
     schema_info: dict[str, Any] | None = None,
+    past_struggles: str = "",
 ) -> SubmissionResponse:
     """
     Run the SQL tutoring pipeline with Gemini LLM reasoning + RAG.
@@ -611,27 +612,11 @@ def run_pipeline_llm(
         else "No additional SQL reference available."
     )
 
-    # Long-term memory — this student's own past struggles, for personalization
-    # (e.g. "keeps missing GROUP BY"). Read-only here; the interaction is
-    # written back to LTM by the API layer after the pipeline returns. Never
-    # allowed to fail the pipeline — same fallback contract as the RAG calls.
-    past_struggles_text = ""
-    try:
-        from backend.memory.long_term import get_long_term_memory
+    # This student's own recent failed attempts, for personalization (e.g.
+    # "keeps missing GROUP BY"). Read from interaction_history by the API layer
+    # and passed in, because this pipeline is sync and has no DB session.
+    past_struggles_text = past_struggles
 
-        past_struggles = get_long_term_memory().retrieve_similar_struggles(
-            user_id=submission.user_id,
-            query=rag_query,
-            n_results=3,
-        )
-        if past_struggles:
-            past_struggles_text = "\n\n".join(
-                f"- {s['metadata'].get('error_type', 'unknown')} error (past attempt): "
-                f"{s['content'][:300]}"
-                for s in past_struggles
-            )
-    except Exception as e:
-        logger.warning("LTM retrieval failed (non-fatal): %s", e)
     if slide_context:
         rag_text += (
             "\n\nNote: excerpts citing 'DB66 LAB' come from the student's own course "

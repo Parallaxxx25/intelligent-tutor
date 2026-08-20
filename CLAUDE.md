@@ -57,9 +57,9 @@ All three pipelines are invoked from `backend/api/routes.py::submit_code` via `r
 
 ### Memory layers
 - **Short-term** (`backend/memory/redis_session.py`): per `(user_id, problem_id)` session — attempt count, last error type, last hint level. Keyed `session:{user_id}:{problem_id}`, cleared on a passing submission.
-- **Long-term** (`backend/memory/long_term.py`): ChromaDB collection of embedded past interactions (code, error_type, hint) for retrieving similar past struggles.
-- **Mastery** (`backend/memory/mastery.py`): per-topic `MasteryLevel` progression (novice→expert) updated after every submission.
-- Both Redis and Chroma failures during app startup/requests are logged and swallowed (non-fatal) — the system is designed to degrade to stateless grading rather than fail submissions.
+- **Long-term**: no separate store. `interaction_history` rows are the record; `routes.py::_recent_struggles` reads back the 3 most recent *failed* attempts and passes them into `run_pipeline_llm` as `past_struggles` (the pipeline is sync and holds no DB session). There used to be a ChromaDB `student_interactions` collection here — it was removed as a duplicate of `interaction_history` that cost a Gemini embedding call per submission.
+- **Mastery** (`backend/memory/mastery.py`): plain `update_mastery(progress, score, attempts)` function — promotion-only `MasteryLevel` progression (novice→expert), mutating the `StudentProgress` row the caller already loaded. Never demotes.
+- Redis failures during app startup/requests are logged and swallowed (non-fatal) — the system is designed to degrade to stateless grading rather than fail submissions. Chroma is now RAG-only.
 
 ### RAG (`backend/rag/`)
 ChromaDB, embedding via `GoogleEmbeddingFunction` (Gemini embeddings, `EMBEDDING_MODEL` setting). `sql_knowledge.py` holds the seeded reference content; `retriever.py` does retrieval + knowledge-base init (called from `main.py` lifespan, non-fatal on failure). Only consulted by `run_pipeline_llm`.

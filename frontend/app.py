@@ -11,7 +11,7 @@ st.set_page_config(page_title="AI SQL Tutor Playground", layout="wide")
 
 st.title("🧠 AI SQL Tutor Playground")
 st.markdown(
-    "An interactive SQL sandbox revealing the AI's internal state (Redis & ChromaDB)."
+    "An interactive SQL sandbox revealing the AI's internal state (Redis & Postgres)."
 )
 
 # Session State for User IDs & currently selected problem
@@ -188,27 +188,21 @@ with col3:
 
     st.markdown("---")
 
-    st.subheader("Long-term Memory (ChromaDB)")
-    st.caption("Embeds semantic patterns of past struggles and queries for retrieval.")
+    st.subheader("Long-term Memory (interaction history)")
+    st.caption("Past struggles the tutor reads back to personalise hints.")
     try:
-        chroma_res = requests.get(f"{API_BASE_URL}/debug/memory/chroma/{USER_ID}")
-        if chroma_res.ok:
-            chroma_data = chroma_res.json()
-            if chroma_data.get("status") == "success" and chroma_data.get("results"):
-                docs = chroma_data["results"].get("documents", [])
-                metas = chroma_data["results"].get("metadatas", [])
-                if docs:
-                    st.write(f"Total Stored Interactions: **{len(docs)}**")
-                    with st.expander("View Embeddings Data"):
-                        for i in range(len(docs)):
-                            st.markdown(f"**Interaction {i+1}**")
-                            st.json(metas[i])
-                            st.text(docs[i])
-                else:
-                    st.write("No long-term memory records found.")
+        history_res = requests.get(f"{API_BASE_URL}/debug/memory/history/{USER_ID}")
+        if history_res.ok:
+            records = history_res.json().get("records", [])
+            if records:
+                st.write(f"Total Stored Interactions: **{len(records)}**")
+                with st.expander("View Interaction History"):
+                    for i, record in enumerate(records):
+                        st.markdown(f"**Interaction {i + 1}**")
+                        st.json(record)
             else:
                 st.write("No long-term memory records found.")
         else:
-            st.write("Could not fetch ChromaDB state.")
+            st.write("Could not fetch interaction history.")
     except Exception:
-        st.write("Could not fetch ChromaDB state.")
+        st.write("Could not fetch interaction history.")

@@ -36,8 +36,39 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _client: chromadb.ClientAPI | None = None
 _collection: chromadb.Collection | None = None
+_persist_dir: str = ""  # "" = in-memory
 
 COLLECTION_NAME = "sql_knowledge"
+
+# One client per persist directory, shared process-wide. Two separate
+# chromadb.Client() instances over the same directory invalidate each other's
+# collection handles ("Collection [uuid] does not exists") the moment the
+# second one opens, so every collection in this process — sql_knowledge and
+# slide_material alike — must come from the same client.
+_clients: dict[str, chromadb.ClientAPI] = {}
+
+
+def get_chroma_client(persist_dir: str | None = None) -> chromadb.ClientAPI:
+    """Return the shared ChromaDB client for ``persist_dir`` ("" = in-memory)."""
+    key = persist_dir or ""
+    if key not in _clients:
+        # Explicit settings avoid the default ONNX embedding model download
+        # that hangs on some platforms.
+        if key:
+            chroma_settings = ChromaSettings(
+                anonymized_telemetry=False,
+                is_persistent=True,
+                persist_directory=key,
+            )
+            logger.info("ChromaDB persistent client at %s", key)
+        else:
+            chroma_settings = ChromaSettings(
+                anonymized_telemetry=False,
+                is_persistent=False,
+            )
+            logger.info("ChromaDB in-memory client")
+        _clients[key] = chromadb.Client(chroma_settings)
+    return _clients[key]
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +83,7 @@ class GoogleEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
     so that tests and offline development still work.
 
     Call counts are tracked at the class level (shared across every instance
-    — retriever.py, slide_retriever.py, and long_term.py each create their
-    own) so ``/api/health`` can report a single fallback rate for the whole
+    — retriever.py and slide_retriever.py each create their own) so ``/api/health`` can report a single fallback rate for the whole
     process; a persistently high rate means real embeddings aren't happening
     and retrieval quality has silently degraded to hash-based noise.
     """
@@ -134,32 +164,20 @@ def initialize_knowledge_base(persist_dir: str | None = None) -> chromadb.Collec
     SQL knowledge documents.
 
     Args:
-        persist_dir: Directory for persistent storage. If None, uses
-                     in-memory storage (good for tests).
+        persist_dir: Directory for persistent storage. Pass "" for
+                     in-memory storage (good for tests); None uses the
+                     configured CHROMA_PERSIST_DIR.
 
     Returns:
         The ChromaDB Collection.
     """
-    global _client, _collection
+    global _client, _collection, _persist_dir
 
     settings = get_settings()
-    chroma_dir = persist_dir or settings.CHROMA_PERSIST_DIR
+    chroma_dir = persist_dir if persist_dir is not None else settings.CHROMA_PERSIST_DIR
 
-    # Use chromadb.Client() with explicit settings to avoid the default
-    # ONNX embedding model download that hangs on some platforms.
-    if chroma_dir:
-        _client = chromadb.Client(ChromaSettings(
-            anonymized_telemetry=False,
-            is_persistent=True,
-            persist_directory=chroma_dir,
-        ))
-        logger.info("ChromaDB persistent client at %s", chroma_dir)
-    else:
-        _client = chromadb.Client(ChromaSettings(
-            anonymized_telemetry=False,
-            is_persistent=False,
-        ))
-        logger.info("ChromaDB in-memory client")
+    _client = get_chroma_client(chroma_dir)
+    _persist_dir = chroma_dir
 
     embedding_fn = GoogleEmbeddingFunction(
         model_name=settings.EMBEDDING_MODEL,
@@ -263,13 +281,20 @@ def get_collection() -> chromadb.Collection | None:
     return _collection
 
 
-def reset_knowledge_base() -> None:
-    """Reset the module-level state (for testing)."""
-    global _client, _collection
-    if _client and _collection:
+def reset_knowledge_base(drop_persisted: bool = False) -> None:
+    """
+    Reset the module-level state (for testing).
+
+    Only drops the collection when it lives in memory. Deleting a *persisted*
+    collection throws away a real seeded index, so that needs
+    ``drop_persisted=True`` — an explicit "yes, wipe the store on disk".
+    """
+    global _client, _collection, _persist_dir
+    if _client and _collection and (not _persist_dir or drop_persisted):
         try:
             _client.delete_collection(COLLECTION_NAME)
         except Exception:
             pass
     _client = None
     _collection = None
+    _persist_dir = ""

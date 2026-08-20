@@ -21,7 +21,6 @@ from backend.api.websocket import router as ws_router
 from backend.config import get_settings
 from backend.db.database import close_db, init_db
 from backend.memory.redis_session import get_session_manager
-from backend.memory.long_term import get_long_term_memory
 
 settings = get_settings()
 
@@ -69,10 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         session_manager = get_session_manager()
         await session_manager.connect()
-        
-        long_term_memory = get_long_term_memory()
-        long_term_memory.initialize()
-        logger.info("Memory components initialised (Redis + Long-term).")
+        logger.info("Memory components initialised (Redis sessions).")
     except Exception as e:
         logger.warning("Memory init failed (non-fatal): %s", e)
 

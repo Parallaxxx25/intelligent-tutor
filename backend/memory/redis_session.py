@@ -7,11 +7,19 @@ Stores state including:
   - recent error patterns
   - start of the session timestamp
 
-Sessions are Redis hashes (not JSON blobs): ``update_session`` writes with a
+Sessions are Redis hashes (not JSON blobs): ``update_session`` merges with a
 single HSET, so a merge is one atomic server-side op instead of a
 client-side read-modify-write race between concurrent submissions.
 
-Managed via a singleton instance connected during app lifespan.
+Values come back as strings (Redis hashes are stringly-typed); callers that
+need a number cast at the call site.
+
+Managed via a singleton instance connected during app lifespan. Every
+operation swallows *all* exceptions, not just RedisError: the cached
+connection is bound to the event loop that opened it, so a second loop
+(tests, a restarted worker) surfaces raw AttributeError/OSError from the
+dead transport. Sessions are best-effort — a broken Redis must degrade to
+stateless grading, never fail a submission.
 """
 
 from __future__ import annotations
@@ -20,15 +28,10 @@ import logging
 from typing import Any, Optional
 
 import redis.asyncio as redis
-from redis.exceptions import RedisError
 
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
-
-# Fields that may be absent from a session hash but must round-trip as the
-# right type once read back (Redis hashes store everything as strings).
-_INT_FIELDS = {"attempts", "last_hint_level"}
 
 
 class SessionManager:
@@ -84,20 +87,8 @@ class SessionManager:
         """Generate a standard Redis key for a session."""
         return f"session:{user_id}:{problem_id}"
 
-    @staticmethod
-    def _coerce(data: dict[str, Any]) -> dict[str, Any]:
-        """Cast hash-stored strings back to int for known numeric fields."""
-        out: dict[str, Any] = dict(data)
-        for field in _INT_FIELDS:
-            if field in out and out[field] not in (None, ""):
-                try:
-                    out[field] = int(out[field])
-                except (TypeError, ValueError):
-                    pass
-        return out
-
     async def get_session(self, user_id: int, problem_id: int) -> dict[str, Any]:
-        """Load session data for a user-problem pair."""
+        """Load session data for a user-problem pair. All values are strings."""
         client = await self._get_client()
         if client is None:
             logger.warning("Redis unavailable. Returning empty session.")
@@ -105,15 +96,14 @@ class SessionManager:
 
         key = self._get_key(user_id, problem_id)
         try:
-            data = await client.hgetall(key)
-            return self._coerce(data) if data else {}
-        except RedisError as e:
+            return await client.hgetall(key) or {}
+        except Exception as e:
             logger.error("Error fetching session from Redis: %s", e)
             self._client = None  # force reconnect attempt next call
             return {}
 
     async def update_session(self, user_id: int, problem_id: int, data: dict[str, Any]) -> bool:
-        """Merge fields into a session hash, atomically, in one round trip."""
+        """Merge fields into a session hash, then refresh its TTL."""
         client = await self._get_client()
         if client is None:
             return False
@@ -125,12 +115,10 @@ class SessionManager:
             return True
 
         try:
-            async with client.pipeline(transaction=True) as pipe:
-                pipe.hset(key, mapping=fields)
-                pipe.expire(key, self.ttl)
-                await pipe.execute()
+            await client.hset(key, mapping=fields)
+            await client.expire(key, self.ttl)
             return True
-        except RedisError as e:
+        except Exception as e:
             logger.error("Error updating session in Redis: %s", e)
             self._client = None
             return False
@@ -145,7 +133,7 @@ class SessionManager:
         try:
             await client.delete(key)
             return True
-        except RedisError as e:
+        except Exception as e:
             logger.error("Error clearing session from Redis: %s", e)
             self._client = None
             return False
@@ -161,7 +149,7 @@ class SessionManager:
             async for key in client.scan_iter(match=f"session:{user_id}:*"):
                 await client.delete(key)
                 deleted += 1
-        except RedisError as e:
+        except Exception as e:
             logger.error("Error clearing user sessions from Redis: %s", e)
             self._client = None
         return deleted
@@ -174,7 +162,7 @@ class SessionManager:
         try:
             await client.ping()
             return True
-        except RedisError:
+        except Exception:
             self._client = None
             return False
 

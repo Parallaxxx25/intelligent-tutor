@@ -233,16 +233,16 @@ class TestFastEmbedEmbeddingFunction:
 
 class TestInitializeSlideKB:
     def test_init_seeds_from_directory(self, synthetic_slides_dir: Path):
-        collection = initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        collection = initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         assert collection.count() == 6
 
     def test_init_idempotent(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
-        collection = initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
+        collection = initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         assert collection.count() == 6
 
     def test_init_missing_dir_leaves_collection_empty(self, tmp_path: Path):
-        collection = initialize_slide_kb(persist_dir=None, slides_dir=str(tmp_path / "nope"))
+        collection = initialize_slide_kb(persist_dir="", slides_dir=str(tmp_path / "nope"))
         assert collection.count() == 0
 
 
@@ -251,35 +251,35 @@ class TestSearchSlides:
         assert search_slides("join error") == []
 
     def test_search_returns_results_shaped_like_curated_kb(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         results = search_slides("JOIN clause error", n_results=2)
         assert len(results) > 0
         for r in results:
             assert {"topic", "title", "content", "citation", "distance"} <= r.keys()
 
     def test_ddl_excluded_by_default(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         results = search_slides("CREATE TABLE", n_results=5)
         assert all(r["topic"] != "ddl" for r in results)
 
     def test_ddl_included_when_requested(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         results = search_slides("CREATE TABLE", n_results=5, include_ddl=True)
         topics = {r["topic"] for r in results}
         assert "ddl" in topics
 
     def test_citation_mentions_lab_and_slide(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         results = search_slides("JOIN", n_results=1)
         assert "LAB" in results[0]["citation"]
         assert "slide" in results[0]["citation"]
 
     def test_n_results_respected(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         results = search_slides("SQL", n_results=1)
         assert len(results) <= 1
 
     def test_reset_then_search_returns_empty(self, synthetic_slides_dir: Path):
-        initialize_slide_kb(persist_dir=None, slides_dir=str(synthetic_slides_dir))
+        initialize_slide_kb(persist_dir="", slides_dir=str(synthetic_slides_dir))
         reset_slide_kb()
         assert search_slides("JOIN") == []

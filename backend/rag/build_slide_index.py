@@ -79,7 +79,7 @@ def main() -> None:
             initialize_slide_kb(slides_dir=str(slides_dir))  # open to get a client reference
         except Exception:
             pass
-        reset_slide_kb()
+        reset_slide_kb(drop_persisted=True)
 
     collection = initialize_slide_kb(slides_dir=str(slides_dir))
     print(f"Index ready: '{collection.name}' — {collection.count()} chunks.")

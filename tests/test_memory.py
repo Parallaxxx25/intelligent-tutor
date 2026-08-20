@@ -1,79 +1,74 @@
 """
-Tests for the Memory package components (Redis, LTM, Mastery).
+Tests for the Memory package (Redis sessions, mastery promotion).
 """
 
 from __future__ import annotations
 
-import json
-import pytest
-from unittest.mock import MagicMock, AsyncMock
-
 import fakeredis
-from sqlalchemy.ext.asyncio import AsyncSession
+import pytest
 
+from backend.db.models import MasteryLevel, StudentProgress
+from backend.memory.mastery import update_mastery
 from backend.memory.redis_session import SessionManager
-from backend.memory.mastery import MasteryTracker
-from backend.db.models import StudentProgress, MasteryLevel
+
 
 @pytest.mark.asyncio
-async def test_dummy_at_top():
-    assert 1 == 1
-
-@pytest.mark.asyncio
-async def test_a_session():
-    """Test get_session, update_session, and clear_session using fakeredis."""
-    # Setup fakeredis client
-    fake_client = fakeredis.FakeAsyncRedis(decode_responses=True)
+async def test_session_manager_basic_ops():
+    """get_session / update_session / clear_session against fakeredis."""
     manager = SessionManager(url="redis://localhost:6379/1")
-    manager._client = fake_client # Inject fake client
+    manager._client = fakeredis.FakeAsyncRedis(decode_responses=True)
 
-    user_id = 999
-    prob_id = 1
-    
-    # 1. Initially empty
-    s1 = await manager.get_session(user_id, prob_id)
-    assert s1 == {}
+    uid, pid = 999, 1
 
-    # 2. Update
-    success = await manager.update_session(user_id, prob_id, {"attempts": 1, "hint": 1})
-    assert success is True
+    # Initially empty
+    assert await manager.get_session(uid, pid) == {}
 
-    # 3. Retrieve
-    s2 = await manager.get_session(user_id, prob_id)
-    assert s2["attempts"] == 1
-    assert s2["hint"] == 1
+    # Merge fields — values round-trip as strings (Redis hashes are stringly-typed)
+    assert await manager.update_session(uid, pid, {"attempts": 1, "last_hint_level": 2})
+    session = await manager.get_session(uid, pid)
+    assert int(session["attempts"]) == 1
+    assert int(session["last_hint_level"]) == 2
 
-    # 4. Clear
-    await manager.clear_session(user_id, prob_id)
-    s3 = await manager.get_session(user_id, prob_id)
-    assert s3 == {}
+    # None values are dropped rather than erroring
+    assert await manager.update_session(uid, pid, {"last_error_type": None})
+    assert "last_error_type" not in await manager.get_session(uid, pid)
 
-@pytest.mark.asyncio
-async def test_mastery_tracker_level_escalation():
-    """Test correctly escalating student mastery levels."""
-    db_session = MagicMock(spec=AsyncSession)
-    tracker = MasteryTracker()
-    
-    user_id = 1
-    problem_id = 101
-    
-    # Mock progress existence
-    mock_progress = StudentProgress(
-        user_id=user_id,
-        problem_id=problem_id,
-        mastery_level=MasteryLevel.NOVICE
-    )
-    
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.first.return_value = mock_progress
-    db_session.execute = AsyncMock(return_value=mock_result)
+    # Clear
+    await manager.clear_session(uid, pid)
+    assert await manager.get_session(uid, pid) == {}
 
-    # NOVICE -> BEGINNER
-    new_lvl = await tracker.update_mastery(db_session, user_id, problem_id, score=0.5, attempts=1)
-    assert new_lvl == MasteryLevel.BEGINNER
-    assert mock_progress.mastery_level == MasteryLevel.BEGINNER
 
-    # BEGINNER -> ADVANCED (skip intermediate with high score)
-    new_lvl = await tracker.update_mastery(db_session, user_id, problem_id, score=0.9, attempts=2)
-    assert new_lvl == MasteryLevel.ADVANCED
-    assert mock_progress.mastery_level == MasteryLevel.ADVANCED
+def _progress(level: MasteryLevel = MasteryLevel.NOVICE) -> StudentProgress:
+    return StudentProgress(user_id=1, problem_id=101, mastery_level=level)
+
+
+def test_mastery_promotes_on_score():
+    progress = _progress()
+
+    assert update_mastery(progress, score=0.5, attempts=1) == MasteryLevel.BEGINNER
+    assert progress.mastery_level == MasteryLevel.BEGINNER
+
+    # Skips INTERMEDIATE on a high score
+    assert update_mastery(progress, score=0.9, attempts=2) == MasteryLevel.ADVANCED
+    assert progress.mastery_level == MasteryLevel.ADVANCED
+
+
+def test_mastery_never_demotes():
+    progress = _progress(MasteryLevel.ADVANCED)
+
+    assert update_mastery(progress, score=0.0, attempts=9) == MasteryLevel.ADVANCED
+    assert update_mastery(progress, score=0.5, attempts=1) == MasteryLevel.ADVANCED
+    assert progress.mastery_level == MasteryLevel.ADVANCED
+
+
+def test_mastery_expert_needs_perfect_score_and_few_attempts():
+    assert update_mastery(_progress(), score=1.0, attempts=2) == MasteryLevel.EXPERT
+    # Perfect but slow — caps at ADVANCED
+    assert update_mastery(_progress(), score=1.0, attempts=5) == MasteryLevel.ADVANCED
+
+
+def test_mastery_tolerates_unflushed_progress_row():
+    """A freshly constructed row has mastery_level=None until the DB default lands."""
+    progress = StudentProgress(user_id=1, problem_id=101)
+    assert progress.mastery_level is None
+    assert update_mastery(progress, score=0.5, attempts=1) == MasteryLevel.BEGINNER

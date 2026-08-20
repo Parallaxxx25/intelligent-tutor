@@ -125,7 +125,6 @@ intelligent-tutor/
 │   │   ├── error_classifier.py # SQL error taxonomy
 │   │   └── hint_generator.py # SQL-specific hint scaffolding
 │   ├── memory/           # Agent memory management
-│   │   ├── long_term.py
 │   │   ├── mastery.py
 │   │   └── redis_session.py
 │   ├── rag/              # Retrieval-Augmented Generation

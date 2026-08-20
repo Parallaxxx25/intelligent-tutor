@@ -50,8 +50,7 @@ from backend.db.schemas import (
     TestCaseResponse,
 )
 from backend.memory.redis_session import get_session_manager
-from backend.memory.long_term import get_long_term_memory
-from backend.memory.mastery import get_mastery_tracker
+from backend.memory.mastery import update_mastery
 
 logger = logging.getLogger(__name__)
 
@@ -88,16 +87,16 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     redis_ok = await session_manager.ping()
     redis = ComponentHealth(status="up" if redis_ok else "down")
 
-    # --- Chroma (long-term memory) ------------------------------------------
+    # --- Chroma (RAG knowledge base) ----------------------------------------
+    from backend.rag.retriever import get_collection
+
     try:
-        ltm = get_long_term_memory()
-        if ltm._collection is None:
-            await run_in_threadpool(ltm.initialize)
-        if ltm._collection is not None:
-            await run_in_threadpool(ltm._client.heartbeat)
-            chroma = ComponentHealth(status="up")
-        else:
+        collection = get_collection()
+        if collection is None:
             chroma = ComponentHealth(status="down", detail="collection not initialized")
+        else:
+            await run_in_threadpool(collection.count)
+            chroma = ComponentHealth(status="up")
     except Exception as e:
         chroma = ComponentHealth(status="down", detail=str(e))
 
@@ -169,6 +168,29 @@ async def get_problem(
 # ---------------------------------------------------------------------------
 
 
+async def _recent_struggles(db: AsyncSession, user_id: int, limit: int = 3) -> str:
+    """
+    This student's most recent failed attempts, formatted for the hint prompt.
+
+    Recency beats semantic similarity here: a student has tens of rows, not
+    thousands, so "what did they just get wrong" is the signal worth having.
+    """
+    result = await db.execute(
+        select(InteractionHistory.error_type, InteractionHistory.hint_text)
+        .where(
+            InteractionHistory.user_id == user_id,
+            InteractionHistory.grading_passed.is_(False),
+        )
+        .order_by(InteractionHistory.id.desc())
+        .limit(limit)
+    )
+    return "\n".join(
+        f"- {error_type.value if error_type else 'unknown'} error (past attempt): "
+        f"{(hint_text or '')[:300]}"
+        for error_type, hint_text in result.all()
+    )
+
+
 @router.post(
     "/submit",
     response_model=SubmissionResponse,
@@ -227,8 +249,9 @@ async def submit_code(
     session_manager = get_session_manager()
     session = await session_manager.get_session(body.user_id, body.problem_id)
 
-    # Use the session's attempt count if it's more up-to-date
-    session_attempts = session.get("attempts", 0)
+    # Use the session's attempt count if it's more up-to-date (Redis hash
+    # values are strings).
+    session_attempts = int(session.get("attempts") or 0)
     db_attempts = progress.attempts if progress else 0
     attempt_count = max(db_attempts, session_attempts) + 1
 
@@ -273,6 +296,7 @@ async def submit_code(
             attempt_count=attempt_count,
             gold_standard_query=gold_standard,
             schema_info=None,  # TODO: extract from problem metadata
+            past_struggles=await _recent_struggles(db, body.user_id),
         )
     elif effective_mode == PipelineMode.LANGGRAPH:
         pipeline_result = await run_in_threadpool(
@@ -357,18 +381,9 @@ async def submit_code(
         progress.last_attempt_at = datetime.now(timezone.utc)
 
     # Apply mastery logic (Phase 3)
-    mastery_tracker = get_mastery_tracker()
-    await mastery_tracker.update_mastery(
-        db,
-        body.user_id,
-        body.problem_id,
-        pipeline_result.grading.score,
-        attempt_count,
-        topic=problem.topic,
-    )
+    update_mastery(progress, pipeline_result.grading.score, attempt_count)
 
-    # --- Update Persistence & State (Phase 3) ---------------------------
-    # 1. Update Redis session
+    # --- Update Redis session -------------------------------------------
     if pipeline_result.overall_passed:
         # Clear short-term memory upon success
         await session_manager.clear_session(body.user_id, body.problem_id)
@@ -391,26 +406,8 @@ async def submit_code(
             },
         )
 
-    # 2. Store in Long-term memory (sync ChromaDB call — off the event loop)
-    try:
-        ltm = get_long_term_memory()
-        await run_in_threadpool(
-            ltm.store_interaction,
-            user_id=body.user_id,
-            problem_id=body.problem_id,
-            code=body.code,
-            error_type=(
-                pipeline_result.diagnosis.error_type
-                if pipeline_result.diagnosis
-                else "none"
-            ),
-            hint_text=(
-                pipeline_result.hint.hint_text if pipeline_result.hint else "none"
-            ),
-            interaction_id=interaction.id,
-        )
-    except Exception as e:
-        logger.warning("Could not store interaction in LTM: %s", e)
+    # Long-term memory needs no separate write — the interaction_history row
+    # added above is the record `_recent_struggles` reads back.
 
     logger.info(
         "Pipeline complete: passed=%s, score=%.2f, hint_level=%s",
@@ -431,9 +428,8 @@ async def submit_code(
 async def delete_user_data(user_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """
     Erase a student's data everywhere it's stored: Postgres (account +
-    interaction/progress history, cascade-deleted with the user row), Redis
-    (any live session hashes), and Chroma (embedded long-term-memory
-    interactions).
+    interaction/progress history, cascade-deleted with the user row) and Redis
+    (any live session hashes).
     """
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalars().first()
@@ -448,32 +444,14 @@ async def delete_user_data(user_id: int, db: AsyncSession = Depends(get_db)) -> 
     session_manager = get_session_manager()
     redis_deleted = await session_manager.clear_user_sessions(user_id)
 
-    chroma_deleted = 0
-    try:
-        ltm = get_long_term_memory()
-        if ltm._collection is None:
-            await run_in_threadpool(ltm.initialize)
-        if ltm._collection is not None:
-            existing = await run_in_threadpool(
-                ltm._collection.get, where={"user_id": user_id}
-            )
-            ids = existing.get("ids") or []
-            if ids:
-                await run_in_threadpool(ltm._collection.delete, ids=ids)
-                chroma_deleted = len(ids)
-    except Exception as e:
-        logger.warning("Could not purge Chroma data for user %d: %s", user_id, e)
-
     logger.info(
-        "Deleted all data for user %d (redis_sessions=%d, chroma_docs=%d)",
-        user_id, redis_deleted, chroma_deleted,
+        "Deleted all data for user %d (redis_sessions=%d)", user_id, redis_deleted
     )
 
     return {
         "status": "deleted",
         "user_id": user_id,
         "redis_sessions_deleted": redis_deleted,
-        "chroma_documents_deleted": chroma_deleted,
     }
 
 
@@ -503,19 +481,32 @@ async def get_redis_memory(user_id: int, problem_id: int):
     return session
 
 
-@router.get("/debug/memory/chroma/{user_id}", dependencies=_debug_dependencies)
-async def get_chroma_memory(user_id: int):
-    try:
-        from backend.memory.long_term import get_long_term_memory
-
-        memory = get_long_term_memory()
-        if not memory._collection:
-            await run_in_threadpool(memory.initialize)
-        collection = memory._collection
-        results = await run_in_threadpool(collection.get, where={"user_id": user_id})
-        return {"status": "success", "results": results}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+@router.get("/debug/memory/history/{user_id}", dependencies=_debug_dependencies)
+async def get_history_memory(
+    user_id: int, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Long-term memory viewer: this student's recent interaction_history rows."""
+    result = await db.execute(
+        select(InteractionHistory)
+        .where(InteractionHistory.user_id == user_id)
+        .order_by(InteractionHistory.id.desc())
+        .limit(20)
+    )
+    return {
+        "status": "success",
+        "records": [
+            {
+                "id": r.id,
+                "problem_id": r.problem_id,
+                "submitted_code": r.submitted_code,
+                "passed": r.grading_passed,
+                "error_type": r.error_type.value if r.error_type else None,
+                "hint_level": r.hint_level,
+                "hint_text": r.hint_text,
+            }
+            for r in result.scalars().all()
+        ],
+    }
 
 
 @router.post("/debug/execute_sql", dependencies=_debug_dependencies)
