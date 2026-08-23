@@ -21,6 +21,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from backend import metrics
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -60,8 +61,15 @@ def get_gemini_model(
         google_api_key=settings.GOOGLE_API_KEY,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+        thinking_budget=settings.THINKING_BUDGET,
+        timeout=settings.GEMINI_CALL_TIMEOUT,
     )
-    logger.info("LangChain Gemini model initialised: %s", name)
+    logger.info(
+        "LangChain Gemini model initialised: %s (thinking_budget=%d, timeout=%ds)",
+        name,
+        settings.THINKING_BUDGET,
+        settings.GEMINI_CALL_TIMEOUT,
+    )
     return model
 
 
@@ -102,18 +110,22 @@ def generate_response(
 
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
+        start = time.perf_counter()
         try:
-            start = time.perf_counter()
             response = model.invoke(messages)
             elapsed = time.perf_counter() - start
             logger.info("LangChain Gemini responded in %.2fs (attempt %d)", elapsed, attempt)
-            
+
             if response.content:
+                metrics.record_gemini_call(elapsed, kind="text", status="ok")
                 return str(response.content).strip()
             else:
                 logger.warning("Empty response from LangChain Gemini on attempt %d", attempt)
+                metrics.record_gemini_call(elapsed, kind="text", status="empty")
                 last_error = RuntimeError("Empty response from Gemini")
         except Exception as e:
+            elapsed = time.perf_counter() - start
+            metrics.record_gemini_call(elapsed, kind="text", status="error")
             logger.warning("LangChain Gemini call failed (attempt %d/%d): %s", attempt, max_retries, e)
             last_error = e
             if attempt < max_retries:
@@ -155,17 +167,21 @@ def generate_structured_response(
     
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
+        start = time.perf_counter()
         try:
-            start = time.perf_counter()
             response = structured_model.invoke(messages)
             elapsed = time.perf_counter() - start
             logger.info("LangChain Gemini JSON response in %.2fs (attempt %d)", elapsed, attempt)
-            
+
             if response:
+                metrics.record_gemini_call(elapsed, kind="structured", status="ok")
                 return response
             else:
+                metrics.record_gemini_call(elapsed, kind="structured", status="empty")
                 last_error = RuntimeError("Empty JSON response")
         except Exception as e:
+            elapsed = time.perf_counter() - start
+            metrics.record_gemini_call(elapsed, kind="structured", status="error")
             logger.warning("LangChain Gemini JSON call failed (attempt %d/%d): %s", attempt, max_retries, e)
             last_error = e
             if attempt < max_retries:

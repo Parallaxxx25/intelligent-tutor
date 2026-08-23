@@ -14,6 +14,7 @@ Version: 2026-02-12
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -51,6 +52,7 @@ from backend.db.schemas import (
 )
 from backend.memory.redis_session import get_session_manager
 from backend.memory.mastery import update_mastery
+from backend import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,14 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
         chroma=chroma,
         embedding_fallback_rate=embedding_fallback_rate,
     )
+
+
+@router.get("/metrics")
+async def get_metrics() -> dict[str, Any]:
+    """In-process latency/fallback counters for this worker process — see
+    backend/metrics.py. Not an aggregate across containers; with two
+    instances behind the proxy, check both during the lab."""
+    return metrics.snapshot()
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +271,7 @@ async def submit_code(
             "test_case_id": tc.id,
             "input_data": tc.input_data,
             "expected_output": tc.expected_output,
+            "check_order": tc.check_order,
         }
         for tc in problem.test_cases
     ]
@@ -280,6 +291,8 @@ async def submit_code(
     # --- Run pipeline ---------------------------------------------------
     session_id_str = f"{body.user_id}:{body.problem_id}"
     await ws_manager.send_event(session_id_str, {"event": "grading_started"})
+
+    _pipeline_start = time.perf_counter()
 
     if effective_mode == PipelineMode.LLM:
         # Extract gold-standard query for output guardrails
@@ -316,6 +329,14 @@ async def submit_code(
             test_cases=test_cases_for_runner,
             attempt_count=attempt_count,
         )
+
+    _pipeline_elapsed = time.perf_counter() - _pipeline_start
+    # This endpoint runs grade+diagnose+hint as one call — until the
+    # /grade + /hint split lands, grade_latency_seconds is the whole
+    # pipeline's time, not grading alone. Real once split.
+    metrics.record_grade_latency(_pipeline_elapsed)
+    if pipeline_result.hint:
+        metrics.record_hint_latency(_pipeline_elapsed, pipeline_result.hint.source)
 
     await ws_manager.send_event(
         session_id_str,

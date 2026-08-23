@@ -1,0 +1,25 @@
+seq,kind,query,executes,error_type,row_count,truncated,exceeds_max_rows,has_order_by,self_grade_passed
+1.1,practice,SELECT * FROM products;,True,,321,False,False,False,True
+1.1,assignment,SELECT * FROM stores;,True,,174,False,False,False,True
+1.2,practice,SELECT email FROM staffs;,True,,10,False,False,False,True
+1.2,assignment,SELECT product_name FROM products;,True,,321,False,False,False,True
+1.3,practice,"SELECT brand_id, brand_name FROM brands;",True,,9,False,False,False,True
+1.3,assignment,"SELECT store_name, phone FROM stores;",True,,174,False,False,False,True
+1.4,practice,"SELECT item_id, product_id, quantity * list_price AS ""Total Price"" FROM order_items",True,,4722,False,False,False,True
+1.4,assignment,"SELECT item_id, product_id, quantity, list_price, (quantity * list_price) - (quantity * discount) AS",True,,4722,False,False,False,True
+1.5,practice,"SELECT Product_name, Model_year, 2026 - Model_year AS ""Product Age"" FROM Products",True,,321,False,False,False,True
+1.5,assignment,"SELECT Product_name, List_price, List_price - 10 AS ""Discounted Price"" FROM Products",True,,321,False,False,False,True
+1.6,practice,"SELECT product_name AS ""Name of Product"", list_price AS ""Price"" FROM products",True,,321,False,False,False,True
+1.6,assignment,"SELECT first_name AS ""Staff Name"", last_name AS ""Staff Surname"" FROM staffs",True,,10,False,False,False,True
+1.7,practice,SELECT First_name || ' ' || Last_name FROM Staffs,True,,10,False,False,False,True
+1.7,assignment,SELECT product_name || ' ($' || list_price || ')' FROM Products,True,,321,False,False,False,True
+1.8,practice,"SELECT      CONCAT(first_name, ' ', last_name) AS full_name,     email FROM customers;",True,,83810,False,False,False,True
+1.8,assignment,"SELECT    CONCAT(store_name, ' (', state, ')') AS Store_list, email FROM stores;",True,,174,False,False,False,True
+1.9,practice,"SELECT DISTINCT city, state FROM customers;",True,,195,False,False,False,True
+1.9,assignment,"SELECT  DISTINCT brand_ID, category_ID FROM products;",True,,23,False,False,False,True
+1.10,practice,SELECT email FROM stores ORDER BY email DESC;,True,,174,False,False,True,True
+1.10,assignment,SELECT brand_name FROM brands ORDER BY brand_name;,True,,9,False,False,True,True
+1.11,practice,"SELECT first_name, last_name FROM staffs ORDER BY first_name;",True,,10,False,False,True,True
+1.11,assignment,"SELECT product_name, model_year FROM products ORDER BY model_year desc;",True,,321,False,False,True,True
+1.12,practice,"SELECT store_name AS Store, phone AS Tel FROM stores ORDER BY state DESC, city;",True,,174,False,False,True,True
+1.12,assignment,"SELECT product_name AS Product, list_price AS Price FROM products ORDER BY list_price DESC;",True,,321,False,False,True,True

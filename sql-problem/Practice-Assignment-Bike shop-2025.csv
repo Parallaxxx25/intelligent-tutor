@@ -1,4 +1,4 @@
-ลำดับ,Topic Evaluated,Practice Question (English),Practice Question (Thai),Practice Answer,Assignment Question (English),Assignment Question (Thai),Assignment Answer
+﻿ลำดับ,Topic Evaluated,Practice Question (English),Practice Question (Thai),Practice Answer,Assignment Question (English),Assignment Question (Thai),Assignment Answer
 1.1,"SELECT *
 FROM 1 table",Write an SQL statement to display all product information.,"จงเขียน SQL Statement แสดงข้อมูลสินค้าทั้งหมด
 ",SELECT * FROM products;,Write an SQL statement to display all store information.,จงเขียน SQL Statement แสดงข้อมูลร้านค้าทั้งหมด,SELECT * FROM stores;
@@ -12,48 +12,25 @@ FROM brands;",Write an SQL statement to display all store names and their phone 
 FROM stores;"
 1.4,"SELECT 2 column, Arithmetic Expressions column alias
 FROM  1 table
-หมายเหตุ ใช้ + - * /","Write an SQL statement to display the item number, product code, and calculate the price of the product in the item number (quantity is mulitipled by list price). Name the last column 'Total Price'.","จงเขียน SQL Statement แสดงรหัสรายการสั่งซื้อ, รหัสสินค้า, และ คำนวณราคาทั้งหมดของสินค้าในรหัสสั่งซื้อนั้นๆ (quantity * list_price) โดยให้ตั้งชื่อคอลัมน์ใหม่ว่า 'Total Price'","SELECT item_id, product_id, quantity * list_price AS 'Total Price'
-FROM order_items;","Write an SQL statement to display the order ID, product code, quantity, price on the order date, and calculate the total price of the items in that order after deducting the discount. Name the new column 'net_price'.","จงเขียน SQL Statement แสดงรหัสรายการสั่งซื้อ, รหัสสินค้า, ปริมาณ, ราคาต่อหน่วย ณ วันสั่งซื้อ และ คำนวณราคาทั้งหมดของสินค้าในรหัสสั่งซื้อนั้นๆ หลังหักลบกับส่วนลด โดยให้ตั้งชื่อคอลัมน์ใหม่ว่า 'net_price'","SELECT 
-    item_id, product_id
-    quantity, list_price,
-    (quantity * list_price)  - (quantity * discount) AS `net_price`
-FROM order_items;"
+หมายเหตุ ใช้ + - * /","Write an SQL statement to display the item number, product code, and calculate the price of the product in the item number (quantity is mulitipled by list price). Name the last column 'Total Price'.","จงเขียน SQL Statement แสดงรหัสรายการสั่งซื้อ, รหัสสินค้า, และ คำนวณราคาทั้งหมดของสินค้าในรหัสสั่งซื้อนั้นๆ (quantity * list_price) โดยให้ตั้งชื่อคอลัมน์ใหม่ว่า 'Total Price'","SELECT item_id, product_id, quantity * list_price AS ""Total Price"" FROM order_items","Write an SQL statement to display the order ID, product code, quantity, price on the order date, and calculate the total price of the items in that order after deducting the discount. Name the new column 'net_price'.","จงเขียน SQL Statement แสดงรหัสรายการสั่งซื้อ, รหัสสินค้า, ปริมาณ, ราคาต่อหน่วย ณ วันสั่งซื้อ และ คำนวณราคาทั้งหมดของสินค้าในรหัสสั่งซื้อนั้นๆ หลังหักลบกับส่วนลด โดยให้ตั้งชื่อคอลัมน์ใหม่ว่า 'net_price'","SELECT item_id, product_id, quantity, list_price, (quantity * list_price) - (quantity * discount) AS ""net_price"" FROM order_items"
 1.5,"SELECT 2 column, Arithmetic Expressions column alias
 FROM  1 table
-หมายเหตุ ใช้ + - * /","Write an SQL statement to display the product name, year the product was launched, and calculate the number of years the product has been on sale since 2026. Name the last column ""Number of Years Launched"".","จงเขียน SQL Statement แสดงชื่อสินค้า, ปีที่สินค้าออกขาย และคำนวณจำนวนปีที่สินค้าได้วางขายนับจากปี 2026 โดยตั้งชื่อคอลัมน์ใหม่ว่า ""Number of Years Launched""","SELECT
-    Product_name,
-    Model_year,
-    2026 - Model_year AS 'Product Age'
-FROM
-    Products;","Write an SQL statement to display the product name, price, and price with a $10 discount (name this column 'Discounted Price').",จงเขียน SQL Statement สำหรับแสดงชื่อสินค้า ราคาขายปลีก และราคาที่มีส่วนลด 10 ดอลลาร์สหรัฐ (ตั้งชื่อคอลัมน์นี้ว่า Discounted Price) ,"SELECT
-    Product_name,
-    List_price,
-    List_price -10 AS `Discounted Price`
-FROM
-    Products;"
+หมายเหตุ ใช้ + - * /","Write an SQL statement to display the product name, year the product was launched, and calculate the number of years the product has been on sale since 2026. Name the last column ""Number of Years Launched"".","จงเขียน SQL Statement แสดงชื่อสินค้า, ปีที่สินค้าออกขาย และคำนวณจำนวนปีที่สินค้าได้วางขายนับจากปี 2026 โดยตั้งชื่อคอลัมน์ใหม่ว่า ""Number of Years Launched""","SELECT Product_name, Model_year, 2026 - Model_year AS ""Product Age"" FROM Products","Write an SQL statement to display the product name, price, and price with a $10 discount (name this column 'Discounted Price').",จงเขียน SQL Statement สำหรับแสดงชื่อสินค้า ราคาขายปลีก และราคาที่มีส่วนลด 10 ดอลลาร์สหรัฐ (ตั้งชื่อคอลัมน์นี้ว่า Discounted Price) ,"SELECT Product_name, List_price, List_price - 10 AS ""Discounted Price"" FROM Products"
 15,"SELECT 2 column, column alias
 FROM 1 table
 ",,,,,,
 1.6,"SELECT 2 column, column alias
 FROM 1 table
-","Write an SQL statement to display the product name and price. Name the columns ""Name of Product"" and ""Price"" respectively.",จงเขียน SQL Statement แสดงชื่อสินค้า ราคาขายปลีก โดยตั้งชื่อคอลัมน์ว่า  Name of Product และ Price ตามลำดับ,"SELECT product_name AS `Name of Product`, list_price AS 'Price'
-FROM products;",Write an SQL statement to display the first and last names of all staffs. Name the columns 'Staff Name' and 'Staff Surname' respectively.,จงเขียน SQL Statement แสดงชื่อพนักงาน และ นามสกุลพนักงานทุกคน โดยตั้งชื่อคอลัมน์ว่า Staff Name และ Staff Surname ตามลำดับ,"SELECT first_name AS 'Staff Name', last_name AS 'Staff Surname'
-FROM staffs;"
+","Write an SQL statement to display the product name and price. Name the columns ""Name of Product"" and ""Price"" respectively.",จงเขียน SQL Statement แสดงชื่อสินค้า ราคาขายปลีก โดยตั้งชื่อคอลัมน์ว่า  Name of Product และ Price ตามลำดับ,"SELECT product_name AS ""Name of Product"", list_price AS ""Price"" FROM products",Write an SQL statement to display the first and last names of all staffs. Name the columns 'Staff Name' and 'Staff Surname' respectively.,จงเขียน SQL Statement แสดงชื่อพนักงาน และ นามสกุลพนักงานทุกคน โดยตั้งชื่อคอลัมน์ว่า Staff Name และ Staff Surname ตามลำดับ,"SELECT first_name AS ""Staff Name"", last_name AS ""Staff Surname"" FROM staffs"
 1.7,"SELECT 2 column, concat 
 FROM 1 table
 ","Write an SQL statement to display the first and last names of all staffs combined in a single column (separating first and last names with one space, e.g., Fabiola Jackson).","จงเขียน SQL Statement เแสดงชื่อจริงและนามสกุลของพนักงานทุกคนโดยรวมไว้ภายใน 1 คอลัมน์ (ให้คั่นระหว่างชื่อจริง กับนามสกุลด้วย 1 ช่องว่าง เช่น Fabiola Jackson)
-","SELECT
-        Concat(First_name , "" "", Last_name)
-FROM
-        Staffs;","Write an SQL statement to display the product name and price of all products in a single column, formatting the result like this example:
+",SELECT First_name || ' ' || Last_name FROM Staffs,"Write an SQL statement to display the product name and price of all products in a single column, formatting the result like this example:
 ""Sun Bicycles Cruz 3 - 2017 ($449.99)""","จงเขียน SQL Statement เพื่อแสดงชื่อสินค้า และ ราคาขายปลีก ของสินค้าทุกชิ้น รวมไว้ใน 1 คอลัมน์ โดยจัดรูปแบบผลลัพธ์ตามตัวอย่างนี้
 ""Sun Bicycles Cruz 3 - 2017 ($449.99)""
 
 *ตัวอย่างคำตอบเป็นเพียงบางส่วนเท่านั้น
-**ผลลัพธ์ที่ได้อาจเรียงไม่เหมือนกับตัวอย่าง","SELECT
-        Concat(product_name, "" ($"", list_price, "")"")
-FROM
-        Products;"
+**ผลลัพธ์ที่ได้อาจเรียงไม่เหมือนกับตัวอย่าง",SELECT product_name || ' ($' || list_price || ')' FROM Products
 1.8,"SELECT 2 column, concat ตั้ง column alias
 FROM 1 table
 ","Write an SQL statement to display a list of all customers. Name the first column ""full_name"" containing the first name, separated by one space, followed by the last name. The second column should display the email address.",จงเขียน SQL Statement แสดงรายชื่อลูกค้าทุกคนตั้งชื่อคอลัมน์ว่า full_name โดยให้คอลัมน์นี้ประกอบด้วยชื่อจริง คั่นด้วย 1 ช่องว่าง ตามด้วยนามสกุล และคอลัมน์ที่สองแสดงอีเมล ,"SELECT 

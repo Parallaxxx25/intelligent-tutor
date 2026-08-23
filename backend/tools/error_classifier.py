@@ -68,6 +68,11 @@ class SQLClassificationResult(BaseModel):
         description="The SQL clause most likely causing the issue (SELECT, WHERE, JOIN, GROUP BY, etc.)",
     )
     severity: str = Field(default="medium", description="low / medium / high")
+    dialect_note: str | None = Field(
+        None,
+        description="Set when the query is valid MySQL but not Postgres — "
+        "named in the hint, never used to change the verdict",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +183,21 @@ def classify_sql_error(
             error_type="security_violation",
             error_message="Query contains a forbidden statement. Only SELECT queries are allowed.",
             severity="high",
+        )
+
+    # Trust the real Postgres executor's syntax_error verdict rather than
+    # re-deriving it from sqlglot's generic parse below — that parser is
+    # lenient enough to accept MySQL-only syntax (e.g. AS 'alias') that
+    # real Postgres rejects, so step 3 below would never catch these.
+    if error_type_hint == "syntax_error":
+        from backend.dialect import diagnose_dialect
+
+        return SQLClassificationResult(
+            error_type="syntax_error",
+            error_message=error_message or "Syntax error in SQL query.",
+            problematic_clause=_guess_problematic_clause_from_error(error_message),
+            severity="medium",
+            dialect_note=diagnose_dialect(student_query) if student_query else None,
         )
 
     # 2. Timeout
@@ -332,17 +352,21 @@ def _guess_clause(query: str, default: str = "SELECT") -> str:
 
 
 def _guess_logic_error_clause(failed_details: str, student_query: str) -> str | None:
-    """Heuristic to guess which clause causes a logic error."""
+    """Heuristic to guess which clause causes a logic error.
+
+    Matches the phrasing test_runner.py's ``_diff_summary_to_text`` produces —
+    keep the two in sync if that wording changes.
+    """
     lower_details = failed_details.lower()
 
-    if "column mismatch" in lower_details:
+    if "column count doesn't match" in lower_details:
         return "SELECT"
-    if "row count" in lower_details:
+    if "rows than expected" in lower_details:
         if re.search(r"\bWHERE\b", student_query, re.IGNORECASE):
             return "WHERE"
         if re.search(r"\bJOIN\b", student_query, re.IGNORECASE):
             return "JOIN"
         return "FROM"
-    if "row content" in lower_details:
+    if "values differ" in lower_details:
         return "WHERE"
     return None

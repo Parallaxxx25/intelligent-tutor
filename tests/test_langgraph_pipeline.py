@@ -242,7 +242,7 @@ class TestLangGraphPipelineFallback:
             print(f"   Test Result {i+1}:")
             print(f"     passed          : {tr.passed}")
             print(f"     error_message   : {tr.error_message}")
-            print(f"     expected_columns: {tr.expected_columns}")
+            print(f"     diff_summary    : {tr.diff_summary}")
             print(f"     actual_columns  : {tr.actual_columns}")
 
         print("\n🔍 STAGE 2 — Diagnosis (LangGraph graph output):")

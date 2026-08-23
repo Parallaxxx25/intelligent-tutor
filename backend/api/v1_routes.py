@@ -1,0 +1,395 @@
+"""
+POST /api/v1/grade + POST /api/v1/hint — the grading + hint service surface
+for a server-to-server integration (an integrating platform's backend
+calling this one, authenticated with X-Service-Key).
+
+Split at the diagnosis boundary, matching the fast-path/slow-path split in
+CLAUDE.md's pipeline description:
+
+  /grade — deterministic only, no LLM. Writes the interaction row and
+           returns a hint_token + student-safe projection (no expected
+           values, ever).
+  /hint  — looks the row up by hint_token (nothing else from the client is
+           trusted — not the error message, not the attempt number).
+           Releases its DB session before the Gemini call
+           (backend.agents.supervisor.diagnose_and_hint takes no session),
+           then reacquires one only to persist the result.
+
+GET /api/v1/problems is also here — what an integrator imports to build its
+own catalog, mapping each row's id to this service's problem_id.
+
+Version: 2026-08-23
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from backend import metrics
+from backend.agents.supervisor import diagnose_and_hint
+from backend.api.auth import require_service_key
+from backend.llm_executor import run_llm_call
+from backend.api.v1_schemas import (
+    GradeRequestV1,
+    GradeResponseV1,
+    HintRequestV1,
+    HintResponseV1,
+    ProblemV1,
+    StudentResultV1,
+)
+from backend.db.database import async_session_factory, get_db
+from backend.db.models import InteractionHistory, Problem, StudentProgress, User
+from backend.memory.mastery import update_mastery
+from backend.memory.redis_session import get_session_manager
+from backend.tools.test_runner import run_sql_tests
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1", tags=["Grading + Hint Service"])
+
+
+# ---------------------------------------------------------------------------
+# Problems
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/problems",
+    response_model=list[ProblemV1],
+    dependencies=[Depends(require_service_key)],
+)
+async def list_problems_v1(db: AsyncSession = Depends(get_db)) -> Any:
+    """The catalog an integrator imports — map each id to your own problem
+    rows (a `tutor_problem_id` column), don't re-key on title text."""
+    result = await db.execute(select(Problem).order_by(Problem.id))
+    return [ProblemV1.model_validate(p) for p in result.scalars().all()]
+
+
+# ---------------------------------------------------------------------------
+# Grade
+# ---------------------------------------------------------------------------
+
+
+async def _get_or_create_user(db: AsyncSession, external_user_id: str) -> User:
+    """external_user_id is stored as `username` — already the unique,
+    required identity column this model has; no schema change needed.
+    Never store an email or real name here."""
+    result = await db.execute(select(User).where(User.username == external_user_id))
+    user = result.scalars().first()
+    if user is not None:
+        return user
+
+    user = User(
+        username=external_user_id,
+        email=f"{external_user_id}@external.invalid",
+        display_name=external_user_id,
+    )
+    db.add(user)
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Lost a race with a concurrent /grade for the same new student.
+        await db.rollback()
+        result = await db.execute(select(User).where(User.username == external_user_id))
+        user = result.scalars().first()
+        if user is None:
+            raise
+    return user
+
+
+def _verdict_from_test_result(passed: bool, ungradable: bool) -> str:
+    if ungradable:
+        return "ungradable"
+    return "pass" if passed else "fail"
+
+
+def _grade_response_from_raw(
+    grading_raw: dict[str, Any],
+    hint_token: str | None,
+    hint_available: bool,
+    execution_time_ms: int,
+) -> GradeResponseV1:
+    tr = grading_raw["test_results"][0]
+    ungradable = tr.get("ungradable", False)
+    verdict = _verdict_from_test_result(tr["passed"], ungradable)
+
+    student_raw = grading_raw["student_result"]
+    student_result = StudentResultV1(
+        columns=student_raw["columns"],
+        rows=[list(row) for row in student_raw["rows"][:50]],
+        row_count=student_raw["row_count"],
+        truncated=student_raw["truncated"],
+    )
+
+    error_message = tr["error_message"] if ungradable else grading_raw.get("student_error")
+
+    return GradeResponseV1(
+        hint_token=hint_token,
+        verdict=verdict,
+        score=grading_raw["score"],
+        execution_time_ms=execution_time_ms,
+        error_message=error_message,
+        student_result=student_result,
+        diff_summary=tr.get("diff_summary"),
+        hint_available=hint_available,
+    )
+
+
+@router.post(
+    "/grade",
+    response_model=GradeResponseV1,
+    dependencies=[Depends(require_service_key)],
+)
+async def grade_v1(body: GradeRequestV1, db: AsyncSession = Depends(get_db)) -> GradeResponseV1:
+    # --- Idempotency: a retried client_submission_id replays, never re-grades ---
+    existing = await db.execute(
+        select(InteractionHistory).where(
+            InteractionHistory.client_submission_id == body.client_submission_id
+        )
+    )
+    interaction = existing.scalars().first()
+    if interaction is not None:
+        grading_raw = json.loads(interaction.grading_details)
+        return _grade_response_from_raw(
+            grading_raw,
+            hint_token=interaction.hint_token,
+            hint_available=interaction.hint_token is not None,
+            execution_time_ms=interaction.execution_time_ms or 0,
+        )
+
+    user = await _get_or_create_user(db, body.external_user_id)
+
+    prob_result = await db.execute(
+        select(Problem)
+        .options(selectinload(Problem.test_cases))
+        .where(Problem.id == body.problem_id)
+    )
+    problem = prob_result.scalars().first()
+    if problem is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Problem {body.problem_id} not found.",
+        )
+    if not problem.test_cases:
+        # Shouldn't happen for the seeded 24 — every problem gets exactly
+        # one test case in seed.py — but fail loudly rather than 500 on a
+        # None deref if the catalog is ever missing one.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Problem {body.problem_id} has no test case configured.",
+        )
+    test_case = problem.test_cases[0]
+
+    # Server-resolved attempt count is authoritative — body.attempt_number
+    # is accepted for the caller's own bookkeeping but has zero effect on
+    # grading or (later) hint-level, which are both computed from this.
+    progress_result = await db.execute(
+        select(StudentProgress).where(
+            StudentProgress.user_id == user.id,
+            StudentProgress.problem_id == problem.id,
+        )
+    )
+    progress = progress_result.scalars().first()
+    real_attempt = (progress.attempts if progress else 0) + 1
+
+    start = time.perf_counter()
+    grading_raw = await run_in_threadpool(
+        run_sql_tests,
+        body.query,
+        [
+            {
+                "test_case_id": test_case.id,
+                "expected_query": test_case.input_data,
+                "check_order": test_case.check_order,
+            }
+        ],
+    )
+    execution_time_ms = int((time.perf_counter() - start) * 1000)
+    metrics.record_grade_latency(execution_time_ms / 1000)
+
+    tr = grading_raw["test_results"][0]
+    passed = tr["passed"]
+    ungradable = tr.get("ungradable", False)
+
+    hint_token = None
+    hint_available = False
+    if not passed:
+        hint_token = uuid.uuid4().hex
+        hint_available = True
+
+    interaction = InteractionHistory(
+        user_id=user.id,
+        problem_id=problem.id,
+        submitted_code=body.query,
+        grading_passed=passed,
+        grading_score=grading_raw["score"],
+        grading_details=json.dumps(grading_raw, default=str),
+        hint_token=hint_token,
+        client_submission_id=body.client_submission_id,
+        verdict_source="primary",
+        attempt_number=real_attempt,
+        execution_time_ms=execution_time_ms,
+    )
+    db.add(interaction)
+
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Lost a race on client_submission_id — someone else's /grade for
+        # the same id committed first. Replay their result.
+        await db.rollback()
+        existing = await db.execute(
+            select(InteractionHistory).where(
+                InteractionHistory.client_submission_id == body.client_submission_id
+            )
+        )
+        interaction = existing.scalars().first()
+        if interaction is None:
+            raise
+        grading_raw = json.loads(interaction.grading_details)
+        return _grade_response_from_raw(
+            grading_raw,
+            hint_token=interaction.hint_token,
+            hint_available=interaction.hint_token is not None,
+            execution_time_ms=interaction.execution_time_ms or 0,
+        )
+
+    # --- Progress + mastery (mirrors /api/submit's logic) ---
+    if progress is None:
+        progress = StudentProgress(
+            user_id=user.id,
+            problem_id=problem.id,
+            attempts=1,
+            best_score=grading_raw["score"],
+            last_attempt_at=datetime.now(timezone.utc),
+        )
+        db.add(progress)
+    else:
+        progress.attempts = real_attempt
+        progress.best_score = max(progress.best_score, grading_raw["score"])
+        progress.last_attempt_at = datetime.now(timezone.utc)
+    update_mastery(progress, grading_raw["score"], real_attempt)
+
+    # --- Redis session, best-effort ---
+    session_manager = get_session_manager()
+    if passed:
+        await session_manager.clear_session(user.id, problem.id)
+    else:
+        await session_manager.update_session(
+            user.id,
+            problem.id,
+            {"attempts": real_attempt, "last_updated": datetime.now(timezone.utc).isoformat()},
+        )
+
+    return _grade_response_from_raw(
+        grading_raw,
+        hint_token=hint_token,
+        hint_available=hint_available,
+        execution_time_ms=execution_time_ms,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hint
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/hint",
+    response_model=HintResponseV1,
+    dependencies=[Depends(require_service_key)],
+)
+async def hint_v1(body: HintRequestV1) -> HintResponseV1:
+    start = time.perf_counter()
+
+    # --- Step 1: read what's needed, then release the session before Gemini ---
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(InteractionHistory).where(InteractionHistory.hint_token == body.hint_token)
+        )
+        interaction = result.scalars().first()
+        if interaction is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or expired hint_token.")
+        if interaction.grading_passed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This submission passed — no hint available.",
+            )
+
+        if interaction.hint_text is not None:
+            # Idempotent replay — a double-click costs no Gemini call.
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            return HintResponseV1(
+                hint_level=interaction.hint_level or 1,
+                hint_text=interaction.hint_text,
+                error_type=interaction.error_type.value if interaction.error_type else None,
+                source="cached",
+                latency_ms=latency_ms,
+            )
+
+        prob_result = await session.execute(
+            select(Problem)
+            .options(selectinload(Problem.test_cases))
+            .where(Problem.id == interaction.problem_id)
+        )
+        problem = prob_result.scalars().first()
+        if problem is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Problem no longer exists.")
+
+        # Copy everything diagnose_and_hint needs into plain locals — the
+        # session (and these ORM objects) are gone once this block exits.
+        submitted_code = interaction.submitted_code
+        grading_raw = json.loads(interaction.grading_details)
+        attempt_number = interaction.attempt_number
+        problem_description = problem.description
+        problem_topic = problem.topic
+        gold_query = problem.test_cases[0].input_data if problem.test_cases else ""
+    # session released here — the Gemini call below holds no DB connection
+
+    diagnosis, hint = await run_llm_call(
+        diagnose_and_hint,
+        student_code=submitted_code,
+        grading_raw=grading_raw,
+        problem_description=problem_description,
+        problem_topic=problem_topic,
+        attempt_count=attempt_number,
+        gold_standard_query=gold_query,
+        schema_info=None,
+        past_struggles="",
+    )
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    metrics.record_hint_latency(latency_ms / 1000, hint.source)
+
+    # --- Step 2: reacquire a session only to persist the result ---
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(InteractionHistory).where(InteractionHistory.hint_token == body.hint_token)
+        )
+        interaction = result.scalars().first()
+        if interaction is not None:
+            interaction.hint_level = hint.hint_level
+            interaction.hint_text = hint.hint_text
+            interaction.error_type = diagnosis.error_type
+            interaction.diagnosis_details = diagnosis.model_dump_json()
+            await session.commit()
+
+    return HintResponseV1(
+        hint_level=hint.hint_level,
+        hint_text=hint.hint_text,
+        error_type=diagnosis.error_type.value if diagnosis.error_type else None,
+        source=hint.source,
+        latency_ms=latency_ms,
+    )

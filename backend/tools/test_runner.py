@@ -104,15 +104,17 @@ def run_sql_tests(
                     "passed": False,
                     "error_message": student_result["error_message"],
                     "error_type": student_result["error_type"],
-                    "expected_columns": None,
+                    "label_mismatch": False,
+                    "diff_summary": None,
+                    "ungradable": False,
                     "actual_columns": None,
-                    "expected_row_count": None,
                     "actual_row_count": 0,
                 }
                 for idx, tc in enumerate(test_cases)
             ],
             "student_error": student_result["error_message"],
             "student_error_type": student_result["error_type"],
+            "student_result": student_result,
         }
 
     # ---- Compare against each test case --------------------------------
@@ -137,17 +139,44 @@ def run_sql_tests(
                 {
                     "test_case_id": tc_id,
                     "passed": False,
-                    "error_message": f"Gold query error: {expected_result['error_message']}",
-                    "expected_columns": None,
+                    "error_message": "This problem's reference answer is currently broken — not your fault.",
+                    "label_mismatch": False,
+                    "diff_summary": None,
+                    "ungradable": True,
                     "actual_columns": student_result["columns"],
-                    "expected_row_count": None,
                     "actual_row_count": student_result["row_count"],
                 }
             )
             continue
 
-        # Compare columns
-        columns_match = _compare_columns(
+        if expected_result["truncated"]:
+            # The gold query itself exceeds MAX_RESULT_ROWS — the catalog
+            # should never hit this, but if it does, this test case can't
+            # be graded reliably rather than silently comparing a truncated
+            # gold against the student's full result.
+            logger.error(
+                "Gold-standard query for test_case %d exceeds MAX_RESULT_ROWS — ungradable.",
+                tc_id,
+            )
+            test_results.append(
+                {
+                    "test_case_id": tc_id,
+                    "passed": False,
+                    "error_message": "This problem's reference answer is too large to grade — not your fault.",
+                    "label_mismatch": False,
+                    "diff_summary": None,
+                    "ungradable": True,
+                    "actual_columns": student_result["columns"],
+                    "actual_row_count": student_result["row_count"],
+                }
+            )
+            continue
+
+        # Column *count* decides pass/fail; a label mismatch never fails a
+        # query whose values are correct (e.g. gold `AS full_name` vs a
+        # student query with no alias, both producing the right data).
+        columns_match = len(student_result["columns"]) == len(expected_result["columns"])
+        label_mismatch = columns_match and not _compare_columns(
             student_result["columns"], expected_result["columns"]
         )
 
@@ -162,20 +191,19 @@ def run_sql_tests(
         if is_pass:
             passed_count += 1
 
-        mismatch_details = None
+        diff_summary = None
         if not is_pass:
-            mismatch_details = _build_mismatch_details(
-                student_result, expected_result, columns_match, rows_match
-            )
+            diff_summary = _build_diff_summary(student_result, expected_result, columns_match, rows_match)
 
         test_results.append(
             {
                 "test_case_id": tc_id,
                 "passed": is_pass,
-                "error_message": mismatch_details,
-                "expected_columns": expected_result["columns"],
+                "error_message": None if is_pass else _diff_summary_to_text(diff_summary),
+                "label_mismatch": label_mismatch,
+                "diff_summary": diff_summary,
+                "ungradable": False,
                 "actual_columns": student_result["columns"],
-                "expected_row_count": expected_result["row_count"],
                 "actual_row_count": student_result["row_count"],
             }
         )
@@ -191,6 +219,7 @@ def run_sql_tests(
         "test_results": test_results,
         "student_error": None,
         "student_error_type": None,
+        "student_result": student_result,
     }
 
 
@@ -223,35 +252,35 @@ def _compare_rows(
         return sorted(str(r) for r in actual) == sorted(str(r) for r in expected)
 
 
-def _build_mismatch_details(
+def _build_diff_summary(
     student: dict[str, Any],
     expected: dict[str, Any],
     columns_match: bool,
     rows_match: bool,
-) -> str:
-    """Build a human-readable mismatch description."""
+) -> dict[str, Any]:
+    """Describe a mismatch without revealing any expected value — only
+    shape (column count, row-count direction), never gold contents."""
+    row_delta = "same"
+    if student["row_count"] > expected["row_count"]:
+        row_delta = "more"
+    elif student["row_count"] < expected["row_count"]:
+        row_delta = "fewer"
+
+    return {
+        "columns_match": columns_match,
+        "row_delta": row_delta if not rows_match else "same",
+    }
+
+
+def _diff_summary_to_text(diff_summary: dict[str, Any] | None) -> str | None:
+    """Human-readable version of a diff summary for the hint pipeline."""
+    if diff_summary is None:
+        return None
     parts: list[str] = []
-
-    if not columns_match:
-        parts.append(
-            f"Column mismatch — expected {expected['columns']}, "
-            f"got {student['columns']}"
-        )
-
-    if not rows_match:
-        if student["row_count"] != expected["row_count"]:
-            parts.append(
-                f"Row count mismatch — expected {expected['row_count']} rows, "
-                f"got {student['row_count']} rows"
-            )
-        else:
-            parts.append("Row content mismatch — same number of rows but different values")
-
-        # Show first few differing rows
-        for i, (s_row, e_row) in enumerate(
-            zip(student["rows"][:3], expected["rows"][:3])
-        ):
-            if s_row != e_row:
-                parts.append(f"  Row {i + 1}: expected {e_row}, got {s_row}")
-
-    return "; ".join(parts)
+    if not diff_summary["columns_match"]:
+        parts.append("Column count doesn't match what the question asks for.")
+    if diff_summary["row_delta"] != "same":
+        parts.append(f"Your query returns {diff_summary['row_delta']} rows than expected.")
+    elif diff_summary["columns_match"]:
+        parts.append("Same shape as expected, but the values differ.")
+    return " ".join(parts)

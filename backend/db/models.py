@@ -136,6 +136,7 @@ class TestCase(Base):
     is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     order: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    check_order: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Relationships
     problem: Mapped["Problem"] = relationship(back_populates="test_cases")
@@ -251,12 +252,35 @@ class InteractionHistory(Base):
     # Hint
     hint_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     hint_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The server-resolved attempt count *at grading time* — not re-derived
+    # from student_progress.attempts later, which can have moved on by the
+    # time /hint is called. Hint-level clamping is computed against this,
+    # so a slow hint request can't drift onto the wrong level.
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     # Metadata
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     execution_time_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Hint handle for the /grade -> /hint split. hint_token is the opaque
+    # value returned to the caller by /grade; /hint looks the row up by it
+    # instead of trusting anything else from the client.
+    hint_token: Mapped[Optional[str]] = mapped_column(
+        String(36), unique=True, nullable=True, index=True
+    )
+    # Dedupes retried /grade calls so a double-click can't double-increment
+    # attempt_count and jump the hint level.
+    client_submission_id: Mapped[Optional[str]] = mapped_column(
+        String(128), unique=True, nullable=True
+    )
+    # "primary" (our Postgres grader) or "client_failover" (their SQLite
+    # grader, used when our /grade was down) — tags rows to exclude from
+    # thesis data when the two graders could disagree.
+    verdict_source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="primary"
+    )
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="interactions")

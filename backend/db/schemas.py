@@ -42,15 +42,25 @@ class CodeSubmission(BaseModel):
 # Internal pipeline schemas (passed between agents)
 # ---------------------------------------------------------------------------
 
+class DiffSummary(BaseModel):
+    """Shape-only mismatch description — never carries an expected value."""
+
+    columns_match: bool
+    row_delta: str = Field(..., description="'more' | 'fewer' | 'same'")
+
+
 class TestCaseResult(BaseModel):
     """Result of running a single SQL test case."""
 
     test_case_id: int
     passed: bool
     error_message: Optional[str] = None
-    expected_columns: Optional[list[str]] = None
+    label_mismatch: bool = Field(
+        default=False,
+        description="True if column labels differ but values/count are correct",
+    )
+    diff_summary: Optional[DiffSummary] = None
     actual_columns: Optional[list[str]] = None
-    expected_row_count: Optional[int] = None
     actual_row_count: Optional[int] = None
 
 
@@ -95,6 +105,11 @@ class DiagnosisResult(BaseModel):
     pedagogical_rationale: str = Field(
         ..., description="Why this hint level was chosen"
     )
+    dialect_note: Optional[str] = Field(
+        None,
+        description="Set when the query is valid MySQL but not Postgres — "
+        "named in the hint, never used to change the verdict",
+    )
 
 
 class HintResponse(BaseModel):
@@ -114,6 +129,16 @@ class HintResponse(BaseModel):
     )
     follow_up_question: Optional[str] = Field(
         None, description="Optional question to prompt student reflection"
+    )
+    source: str = Field(
+        default="rule_based",
+        description="'llm' | 'rule_based' — rule_based covers both the "
+        "deterministic pipeline's normal path and every LLM-pipeline fallback",
+    )
+    fallback_reason: Optional[str] = Field(
+        None,
+        description="Set when source='rule_based' in the LLM pipeline: "
+        "'diagnosis_error' | 'hint_error' | 'guardrail'",
     )
 
 

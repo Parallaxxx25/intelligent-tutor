@@ -15,10 +15,13 @@ Version: 2026-02-12
 
 from __future__ import annotations
 
+import os
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from backend.config import get_settings
 from backend.db.database import engine, init_db
 from backend.db.models import Base
 from backend.main import app
@@ -28,9 +31,24 @@ from backend.main import app
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _assert_safe_to_wipe() -> None:
+    """Refuse to run destructive fixtures against anything but an isolated
+    test database — engine.begin()/drop_all below targets whatever
+    POSTGRES_URL resolves to, which defaults to the same .env used in dev."""
+    url = get_settings().POSTGRES_URL
+    if os.environ.get("ENV") != "test" or "_test" not in url:
+        pytest.exit(
+            "Refusing to run: tests/test_api.py drops all tables against "
+            "POSTGRES_URL. Set ENV=test and point POSTGRES_URL at a "
+            "database whose name contains '_test' before running this file.",
+            returncode=1,
+        )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def setup_database():
     """Create tables before tests, drop after."""
+    _assert_safe_to_wipe()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield

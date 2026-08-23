@@ -185,7 +185,7 @@ class TestSQLErrorClassifier:
         result = classify_sql_error(
             error_message="",
             all_tests_passed=False,
-            failed_test_details="Row count mismatch — expected 3 rows, got 10 rows",
+            failed_test_details="Your query returns fewer rows than expected.",
             student_query="SELECT * FROM employees WHERE salary > 50000",
         )
         assert result.error_type == "logic_error"
@@ -196,7 +196,7 @@ class TestSQLErrorClassifier:
         result = classify_sql_error(
             error_message="",
             all_tests_passed=False,
-            failed_test_details="Column mismatch — expected ['name', 'salary'], got ['id', 'name']",
+            failed_test_details="Column count doesn't match what the question asks for.",
         )
         assert result.error_type == "logic_error"
         assert result.problematic_clause == "SELECT"

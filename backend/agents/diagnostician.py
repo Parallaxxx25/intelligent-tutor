@@ -37,6 +37,7 @@ def diagnose_errors(state: dict[str, Any]) -> dict[str, Any]:
         - diagnosis_error_message: str
         - diagnosis_problematic_clause: str | None
         - diagnosis_severity: str
+        - diagnosis_dialect_note: str | None
         - recommended_hint_level: int
         - pedagogical_rationale: str
     """
@@ -89,6 +90,7 @@ def diagnose_errors(state: dict[str, Any]) -> dict[str, Any]:
         "diagnosis_error_message": classification.error_message,
         "diagnosis_problematic_clause": classification.problematic_clause,
         "diagnosis_severity": classification.severity,
+        "diagnosis_dialect_note": classification.dialect_note,
         "recommended_hint_level": rec_level,
         "pedagogical_rationale": rationale,
     }

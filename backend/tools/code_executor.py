@@ -36,10 +36,17 @@ _DANGEROUS_PATTERNS: list[re.Pattern] = [
 ]
 
 _ALLOWED_STATEMENTS = re.compile(
-    r"^\s*(SELECT|WITH|EXPLAIN)\b", re.IGNORECASE
+    r"^(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*(SELECT|WITH|EXPLAIN)\b",
+    re.IGNORECASE | re.DOTALL,
 )
 
-MAX_RESULT_ROWS = 200
+# Rows compared for grading. The executor requests one extra row (see
+# _bound_query) so an overflow can be detected instead of silently
+# truncating both sides to equal, coincidentally-matching lengths.
+# 100k, not 10k: gold #7 (`SELECT ... FROM customers`) legitimately returns
+# all 82,365 rows of this seed's customers table — this BikeStores seed is
+# far larger than the ~1,445-customer dataset the original plan assumed.
+MAX_RESULT_ROWS = 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -120,14 +127,16 @@ def execute_sql(
 
     settings = get_settings()
     timeout = timeout or settings.CODE_EXEC_TIMEOUT
-    db_url = database_url or settings.POSTGRES_URL_SYNC
+    db_url = database_url or settings.POSTGRES_URL_EXEC or settings.POSTGRES_URL_SYNC
 
     # --- Safety check: only SELECT / WITH / EXPLAIN -----------------------
-    if not _ALLOWED_STATEMENTS.match(query.strip()):
+    match = _ALLOWED_STATEMENTS.match(query.strip())
+    if not match:
         return _error_result(
             "security_violation",
             "Only SELECT, WITH, and EXPLAIN statements are allowed.",
         )
+    statement_kind = match.group(1).upper()
 
     for pat in _DANGEROUS_PATTERNS:
         if pat.search(query):
@@ -136,14 +145,26 @@ def execute_sql(
                 f"Query contains a forbidden keyword: {pat.pattern}",
             )
 
+    # psycopg2's default cursor buffers the *entire* result set client-side
+    # on execute() — fetchmany() only pages an already-full buffer, so it
+    # gives no memory protection against e.g. a cross join. Bound the row
+    # count in SQL itself instead. Skipped for EXPLAIN (not a row-producing
+    # query) — request one extra row so an overflow is detectable rather
+    # than truncating both sides to a coincidentally-equal length.
+    exec_query = query
+    if statement_kind != "EXPLAIN":
+        exec_query = _bound_query(query)
+
     # --- Execute query ----------------------------------------------------
     try:
         import psycopg2
         from psycopg2 import sql as psql  # noqa: F401
 
         # Set a configurable search path so queries don't fail when querying
-        # specific schemas without typing them out (e.g. production.products)
-        search_path = "public,production,sales"
+        # specific schemas without typing them out (e.g. production.products).
+        # 'public' is deliberately excluded — it holds this app's own tables
+        # (users, test_cases, ...), none of which BikeStores needs.
+        search_path = "production,sales"
         conn = psycopg2.connect(
             db_url,
             options=f"-c statement_timeout={timeout * 1000} -c search_path={search_path}"
@@ -153,17 +174,22 @@ def execute_sql(
         try:
             start = time.perf_counter()
             cur = conn.cursor()
-            cur.execute(query)
+            cur.execute(exec_query)
 
             columns = [desc[0] for desc in cur.description] if cur.description else []
-            rows = cur.fetchmany(MAX_RESULT_ROWS) if cur.description else []
+            rows = cur.fetchall() if cur.description else []
             elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+            truncated = len(rows) > MAX_RESULT_ROWS
+            if truncated:
+                rows = rows[:MAX_RESULT_ROWS]
 
             return {
                 "success": True,
                 "columns": columns,
                 "rows": [tuple(row) for row in rows],
                 "row_count": len(rows),
+                "truncated": truncated,
                 "execution_time_ms": elapsed_ms,
                 "error_type": None,
                 "error_message": None,
@@ -179,6 +205,14 @@ def execute_sql(
         return _error_result(error_type, error_str)
 
 
+def _bound_query(query: str) -> str:
+    """Wrap a SELECT/WITH query so the database — and therefore the client
+    buffer above — never produces more than MAX_RESULT_ROWS + 1 rows,
+    regardless of what the query itself does."""
+    stripped = query.strip().rstrip(";").strip()
+    return f"SELECT * FROM (\n{stripped}\n) AS _bounded_q LIMIT {MAX_RESULT_ROWS + 1}"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -190,6 +224,7 @@ def _error_result(error_type: str, message: str) -> dict[str, Any]:
         "columns": [],
         "rows": [],
         "row_count": 0,
+        "truncated": False,
         "execution_time_ms": 0,
         "error_type": error_type,
         "error_message": message,

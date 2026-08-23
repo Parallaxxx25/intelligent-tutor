@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes import router as api_router
+from backend.api.v1_routes import router as v1_router
 from backend.api.websocket import router as ws_router
 from backend.config import get_settings
 from backend.db.database import close_db, init_db
@@ -109,6 +110,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(api_router)
+app.include_router(v1_router)
 app.include_router(ws_router)
 
 

@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     LLM_MODEL: str = "gemini/gemini-2.5-flash"
     OPENROUTER_API_KEY: str = ""
+    # 0 disables dynamic thinking — ~3x latency cut, ~40% fewer output
+    # tokens, at the cost of some reasoning depth. Re-run the eval suite
+    # (backend/evaluation/) before changing this away from 0 for a lab.
+    THINKING_BUDGET: int = 0
+    GEMINI_CALL_TIMEOUT: int = 15  # seconds, per Gemini call
+    # Kill switch — flips the LLM pipeline to the deterministic pipeline
+    # without a redeploy. Flip this, not GOOGLE_API_KEY, to disable Gemini.
+    LLM_ENABLED: bool = True
+    # Dedicated thread pool for /api/v1/hint's Gemini calls (backend/llm_executor.py)
+    # — kept separate from anyio's shared default pool so a Gemini stall
+    # can't park /grade's threads too.
+    LLM_EXECUTOR_MAX_WORKERS: int = 12
+    LLM_SEMAPHORE_LIMIT: int = 6
 
     # -- Observability -------------------------------------------------------
     LANGSMITH_API_KEY: str = ""
@@ -49,6 +62,10 @@ class Settings(BaseSettings):
     # -- Databases -----------------------------------------------------------
     POSTGRES_URL: str = "postgresql+asyncpg://tutor:tutor_pass@localhost:5432/tutor_db"
     POSTGRES_URL_SYNC: str = "postgresql://tutor:tutor_pass@localhost:5432/tutor_db"
+    # Read-only role for student query execution (code_executor.py). Empty
+    # falls back to POSTGRES_URL_SYNC — set this once the student_ro role
+    # exists so a submitted query physically cannot read app tables.
+    POSTGRES_URL_EXEC: str = ""
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # -- Code Execution ------------------------------------------------------
@@ -82,6 +99,10 @@ class Settings(BaseSettings):
     # Empty = auth disabled (local dev). Set to require the X-API-Key header
     # on /api/submit and /api/debug/* and to enable /api/users/{id}/data deletion.
     API_KEY: str = ""
+    # Server-to-server key for /api/v1/* (an integrating platform's backend
+    # calling this service). Deliberately separate from API_KEY — a
+    # different caller, a different trust boundary, rotated independently.
+    SERVICE_KEY: str = ""
     INTERACTION_RETENTION_DAYS: int = 180
 
     # -- Application ---------------------------------------------------------

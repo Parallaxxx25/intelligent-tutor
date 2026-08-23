@@ -19,13 +19,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
-import sqlglot
-
 from langgraph.graph import END, StateGraph
 
+from backend import metrics
 from backend.agents.diagnostician import diagnose_errors
 from backend.agents.few_shot_examples import DIAGNOSIS_FEW_SHOT, HINT_FEW_SHOT
 from backend.agents.tutor import generate_hint
+from backend.config import get_settings
 from backend.db.schemas import (
     CodeSubmission,
     DiagnosisResult,
@@ -42,15 +42,12 @@ from backend.tools.test_runner import run_sql_tests
 logger = logging.getLogger(__name__)
 
 
-def _format_sql_query(query: str) -> str:
-    """Format the student's query using sqlglot if syntax is valid."""
-    try:
-        parsed = sqlglot.parse_one(query)
-        return parsed.sql(pretty=True)
-    except Exception:
-        # Ignore syntax errors here; let Grader & Diagnostician handle it
-        # so it gets properly recorded as a failed attempt.
-        return query
+def _prepend_dialect_note(hint_text: str, dialect_note: str | None) -> str:
+    """Prefix a hint with the MySQL-vs-Postgres dialect note when set.
+    Never changes the verdict — this only affects hint wording."""
+    if not dialect_note:
+        return hint_text
+    return f"{dialect_note}\n\n{hint_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +81,6 @@ def run_pipeline_deterministic(
         A fully-populated ``SubmissionResponse``.
     """
     start_time = time.perf_counter()
-    submission.code = _format_sql_query(submission.code)
 
     # --- Step 1: Grade --------------------------------------------------
     logger.info(
@@ -99,7 +95,7 @@ def run_pipeline_deterministic(
             "expected_query": tc[
                 "input_data"
             ],  # gold-standard query stored in input_data
-            "check_order": tc.get("check_order", True),
+            "check_order": tc.get("check_order", False),
         }
         for idx, tc in enumerate(test_cases)
     ]
@@ -117,9 +113,9 @@ def run_pipeline_deterministic(
                     "test_case_id": tr["test_case_id"],
                     "passed": tr["passed"],
                     "error_message": tr.get("error_message"),
-                    "expected_columns": tr.get("expected_columns"),
+                    "label_mismatch": tr.get("label_mismatch", False),
+                    "diff_summary": tr.get("diff_summary"),
                     "actual_columns": tr.get("actual_columns"),
-                    "expected_row_count": tr.get("expected_row_count"),
                     "actual_row_count": tr.get("actual_row_count"),
                 }
             )
@@ -170,6 +166,7 @@ def run_pipeline_deterministic(
             f"{classification.severity} severity. "
             f"Escalating to hint level {recommended_level}."
         ),
+        dialect_note=classification.dialect_note,
     )
 
     # --- Step 3: Generate hint (skip if all passed) ---------------------
@@ -186,7 +183,7 @@ def run_pipeline_deterministic(
         )
         hint = HintResponse(
             hint_level=hint_raw["hint_level"],
-            hint_text=hint_raw["hint_text"],
+            hint_text=_prepend_dialect_note(hint_raw["hint_text"], classification.dialect_note),
             hint_type=hint_raw.get("hint_type", "text"),
             pedagogical_rationale=hint_raw.get("pedagogical_rationale"),
             follow_up_question=hint_raw.get("follow_up_question"),
@@ -226,6 +223,7 @@ class PipelineState(TypedDict, total=False):
     diagnosis_error_message: str
     diagnosis_problematic_clause: str | None
     diagnosis_severity: str
+    diagnosis_dialect_note: str | None
     recommended_hint_level: int
     pedagogical_rationale: str
     # Set by tutor node
@@ -263,7 +261,6 @@ def run_pipeline_langgraph(
     Run the SQL tutoring pipeline using LangGraph.
     """
     start_time = time.perf_counter()
-    submission.code = _format_sql_query(submission.code)
 
     logger.info("LangGraph Pipeline step 1: Grading SQL submission")
 
@@ -271,7 +268,7 @@ def run_pipeline_langgraph(
         {
             "test_case_id": tc.get("test_case_id", idx),
             "expected_query": tc["input_data"],
-            "check_order": tc.get("check_order", True),
+            "check_order": tc.get("check_order", False),
         }
         for idx, tc in enumerate(test_cases)
     ]
@@ -289,9 +286,9 @@ def run_pipeline_langgraph(
                     "test_case_id": tr["test_case_id"],
                     "passed": tr["passed"],
                     "error_message": tr.get("error_message"),
-                    "expected_columns": tr.get("expected_columns"),
+                    "label_mismatch": tr.get("label_mismatch", False),
+                    "diff_summary": tr.get("diff_summary"),
                     "actual_columns": tr.get("actual_columns"),
-                    "expected_row_count": tr.get("expected_row_count"),
                     "actual_row_count": tr.get("actual_row_count"),
                 }
             )
@@ -339,6 +336,7 @@ def run_pipeline_langgraph(
     )
 
     # Build structured response from graph output
+    dialect_note = graph_output.get("diagnosis_dialect_note")
     diagnosis = DiagnosisResult(
         error_type=ErrorTypeEnum(graph_output["diagnosis_error_type"]),
         error_message=graph_output["diagnosis_error_message"],
@@ -348,6 +346,7 @@ def run_pipeline_langgraph(
         pedagogical_rationale=graph_output.get(
             "pedagogical_rationale", "Generated by LangGraph pipeline."
         ),
+        dialect_note=dialect_note,
     )
 
     hint_raw = graph_output.get("hint_raw", {})
@@ -355,7 +354,9 @@ def run_pipeline_langgraph(
         hint_level=hint_raw.get(
             "hint_level", graph_output.get("recommended_hint_level", 1)
         ),
-        hint_text=graph_output.get("hint_text", str(graph_output)),
+        hint_text=_prepend_dialect_note(
+            graph_output.get("hint_text", str(graph_output)), dialect_note
+        ),
         hint_type=hint_raw.get("hint_type", "text"),
         pedagogical_rationale=hint_raw.get(
             "pedagogical_rationale", "Generated by LangGraph pipeline."
@@ -379,6 +380,339 @@ def run_pipeline_langgraph(
 # ---------------------------------------------------------------------------
 # LLM-powered pipeline (Phase 2)
 # ---------------------------------------------------------------------------
+
+
+@traceable(name="Diagnose and Hint")
+def diagnose_and_hint(
+    student_code: str,
+    grading_raw: dict[str, Any],
+    problem_description: str,
+    problem_topic: str,
+    attempt_count: int = 1,
+    gold_standard_query: str = "",
+    schema_info: dict[str, Any] | None = None,
+    past_struggles: str = "",
+) -> tuple[DiagnosisResult, HintResponse]:
+    """
+    Gemini diagnosis + hint generation for an already-graded, already-failed
+    submission — the part of the LLM pipeline that actually needs Gemini.
+
+    Pulled out of ``run_pipeline_llm`` so ``/api/v1/hint`` can call this
+    without holding a DB session across the Gemini call: the caller reads
+    what it needs (this student's grading_raw, problem text, attempt count),
+    releases its session, calls this function, then reacquires a session
+    only to persist the result. This function itself touches no DB session.
+
+    Never call this for a passing submission — callers own the
+    "all tests passed" short-circuit, same as run_pipeline_llm did.
+    """
+    from backend.guardrails import validate_input, validate_output
+    from backend.llm import generate_response, generate_structured_response
+    from backend.rag.retriever import retrieve_relevant_context
+
+    # Run rule-based classifier first for baseline
+    failed_details = json.dumps(
+        [tr for tr in grading_raw["test_results"] if not tr["passed"]],
+        indent=2,
+        default=str,
+    )
+
+    classification = classify_sql_error(
+        error_message=grading_raw.get("student_error") or "",
+        error_type_hint=grading_raw.get("student_error_type") or "",
+        all_tests_passed=False,
+        failed_test_details=failed_details,
+        student_query=student_code,
+    )
+
+    if attempt_count <= 1:
+        base_rec_level = 1
+    elif attempt_count == 2:
+        base_rec_level = 2
+    elif attempt_count == 3:
+        base_rec_level = 3
+    else:
+        base_rec_level = 4
+
+    # student_code is about to be embedded verbatim into a Gemini prompt —
+    # gate that here rather than at the caller, since this is the only
+    # place in the codebase that actually builds that prompt. run_pipeline_llm
+    # also checks input guardrails earlier (before grading even runs) and
+    # short-circuits to the deterministic pipeline first, so this is a
+    # no-op there; for /api/v1/hint (which never sees the raw submission
+    # before this point) it's the only gate.
+    input_check = validate_input(student_code)
+    if not input_check.passed:
+        logger.warning("Input guardrails failed on hint request: %s", input_check.violations)
+        metrics.record_hint_fallback("guardrail")
+        diagnosis = DiagnosisResult(
+            error_type=ErrorTypeEnum(classification.error_type),
+            error_message=classification.error_message,
+            problematic_clause=classification.problematic_clause,
+            severity=classification.severity,
+            recommended_hint_level=base_rec_level,
+            pedagogical_rationale="Rule-based diagnosis (input guardrail rejected the request).",
+            dialect_note=classification.dialect_note,
+        )
+        hint_raw = generate_sql_hint(
+            error_type=classification.error_type,
+            error_message=classification.error_message,
+            student_query=student_code,
+            attempt_count=attempt_count,
+            problem_description=problem_description,
+            problematic_clause=classification.problematic_clause,
+        )
+        hint = HintResponse(
+            hint_level=hint_raw["hint_level"],
+            hint_text=_prepend_dialect_note(hint_raw["hint_text"], classification.dialect_note),
+            hint_type=hint_raw.get("hint_type", "text"),
+            pedagogical_rationale=hint_raw.get("pedagogical_rationale"),
+            follow_up_question=hint_raw.get("follow_up_question"),
+            source="rule_based",
+            fallback_reason="guardrail",
+        )
+        return diagnosis, hint
+
+    # Retrieve relevant SQL concept context
+    rag_query = (
+        f"SQL error: {classification.error_type}. "
+        f"Student query: {student_code}. "
+        f"Error: {classification.error_message}"
+    )
+    rag_context = retrieve_relevant_context(
+        query=rag_query,
+        error_type=classification.error_type,
+        n_results=3,
+    )
+
+    # Course-grounded slide context (DB66 lab decks) — additive to the curated
+    # KB above, not a replacement. Never allowed to fail the pipeline: any
+    # error here just means the hint loses slide citations, same fallback
+    # contract as the curated RAG call.
+    settings = get_settings()
+    slide_context: list[dict[str, Any]] = []
+    if settings.SLIDE_RAG_ENABLED:
+        try:
+            from backend.rag.slide_retriever import search_slides
+
+            slide_context = search_slides(
+                query=rag_query,
+                error_type=classification.error_type,
+                n_results=settings.SLIDE_RAG_N_RESULTS,
+            )
+        except Exception as e:
+            logger.warning("Slide RAG retrieval failed (non-fatal): %s", e)
+
+    combined_context = rag_context + slide_context
+    rag_text = (
+        "\n\n".join(f"### {doc['title']}\n{doc['content']}" for doc in combined_context)
+        if combined_context
+        else "No additional SQL reference available."
+    )
+
+    # This student's own recent failed attempts, for personalization (e.g.
+    # "keeps missing GROUP BY"). Read from interaction_history by the caller
+    # and passed in, because this function is sync and has no DB session.
+    past_struggles_text = past_struggles
+
+    if slide_context:
+        rag_text += (
+            "\n\nNote: excerpts citing 'DB66 LAB' come from the student's own course "
+            "slides, which teach Oracle SQL against a different practice schema "
+            "(employees/departments/locations). Use them only to explain the underlying "
+            "concept and cite the slide — never name those tables/columns; the student's "
+            "database is PostgreSQL with the BikeStores schema."
+        )
+
+    # Use Gemini to produce a richer diagnosis
+    try:
+        diagnosis_schema = {
+            "error_type": "string (one of: syntax_error, column_error, relation_error, join_error, aggregation_error, subquery_error, type_error, ambiguity_error, logic_error, runtime_error, timeout_error)",
+            "error_message": "string — clear explanation of the error",
+            "problematic_clause": "string — SQL clause causing the issue (SELECT, FROM, WHERE, JOIN, GROUP BY, HAVING, ORDER BY)",
+            "severity": "string — low, medium, or high",
+            "recommended_hint_level": "integer 1-4",
+            "pedagogical_rationale": "string — why this hint level",
+        }
+
+        rec_level = base_rec_level
+
+        diagnosis_prompt = (
+            f"You are an expert SQL diagnostician. Analyse this student's SQL error.\n\n"
+            f"{DIAGNOSIS_FEW_SHOT}\n"
+            f"NOW ANALYSE THIS CASE:\n\n"
+            f"STUDENT QUERY:\n```sql\n{student_code}\n```\n\n"
+            f"ERROR MESSAGE: {classification.error_message}\n"
+            f"RULE-BASED CLASSIFICATION: {classification.error_type}\n"
+            f"PROBLEMATIC CLAUSE: {classification.problematic_clause or 'unknown'}\n"
+            f"FAILED TESTS:\n{failed_details}\n\n"
+            f"PROBLEM: {problem_description}\n"
+            f"TOPIC: {problem_topic}\n"
+            f"ATTEMPT NUMBER: {attempt_count}\n"
+            f"RECOMMENDED HINT LEVEL: {rec_level}\n\n"
+            f"RELEVANT SQL CONCEPTS:\n{rag_text}\n\n"
+            f"Provide a detailed but concise diagnosis. Be specific about what's wrong."
+        )
+
+        llm_diagnosis = generate_structured_response(
+            prompt=diagnosis_prompt,
+            response_schema=diagnosis_schema,
+            system_instruction=(
+                "You are an SQL education diagnostician. Classify errors precisely "
+                "and recommend appropriate hint levels based on the student's attempt count."
+            ),
+            temperature=0.3,
+        )
+
+        diagnosis = DiagnosisResult(
+            error_type=ErrorTypeEnum(
+                llm_diagnosis.get("error_type", classification.error_type)
+            ),
+            error_message=llm_diagnosis.get(
+                "error_message", classification.error_message
+            ),
+            problematic_clause=llm_diagnosis.get(
+                "problematic_clause", classification.problematic_clause
+            ),
+            severity=llm_diagnosis.get("severity", classification.severity),
+            # Clamped to the attempt-derived level — Gemini claiming level 4
+            # on attempt 1 must never hand out the solution template early.
+            recommended_hint_level=min(
+                int(llm_diagnosis.get("recommended_hint_level", rec_level)),
+                rec_level,
+            ),
+            pedagogical_rationale=llm_diagnosis.get(
+                "pedagogical_rationale",
+                f"LLM diagnosis for attempt {attempt_count}.",
+            ),
+            dialect_note=classification.dialect_note,
+        )
+    except Exception as e:
+        logger.warning("LLM diagnosis failed (%s) — using rule-based fallback.", e)
+        rec_level = base_rec_level
+
+        diagnosis = DiagnosisResult(
+            error_type=ErrorTypeEnum(classification.error_type),
+            error_message=classification.error_message,
+            problematic_clause=classification.problematic_clause,
+            severity=classification.severity,
+            recommended_hint_level=rec_level,
+            pedagogical_rationale=(
+                f"Rule-based diagnosis (LLM fallback). Student attempt {attempt_count}."
+            ),
+            dialect_note=classification.dialect_note,
+        )
+
+    # --- Generate hint with LLM + RAG ------------------------------------
+    try:
+        hint_level = diagnosis.recommended_hint_level
+        level_descriptions = {
+            1: "Attention: Direct their attention to the problematic clause WITHOUT explaining the error.",
+            2: "Category: Explain what TYPE of SQL error they made and the general principle.",
+            3: "Concept: Show a SIMILAR but DIFFERENT SQL example demonstrating the correct pattern.",
+            4: "Solution Scaffold: Provide an incomplete SQL template with blanks (___) for them to fill in.",
+        }
+
+        hint_prompt = (
+            f"You are a warm, encouraging SQL tutor. Generate a hint for this student.\n\n"
+            f"STUDENT QUERY:\n```sql\n{student_code}\n```\n\n"
+            f"DIAGNOSIS:\n"
+            f"- Error type: {diagnosis.error_type}\n"
+            f"- Error message: {diagnosis.error_message}\n"
+            f"- Problematic clause: {diagnosis.problematic_clause or 'unknown'}\n\n"
+            f"PROBLEM: {problem_description}\n"
+            f"ATTEMPT: {attempt_count}\n"
+            f"REQUIRED HINT LEVEL: {hint_level} — {level_descriptions.get(hint_level, '')}\n\n"
+            f"RELEVANT SQL CONCEPTS:\n{rag_text}\n\n"
+            + (
+                f"THIS STUDENT'S PAST STRUGGLES (use only if a pattern is relevant — "
+                f"e.g. call out a recurring mistake — never just repeat this list):\n"
+                f"{past_struggles_text}\n\n"
+                if past_struggles_text
+                else ""
+            )
+            + f"RULES:\n"
+            f"- NEVER reveal the complete SQL solution\n"
+            f"- Be encouraging — use positive framing\n"
+            f"- Keep the hint concise (2-4 sentences for levels 1-2, up to a paragraph for 3-4)\n"
+            f"- Use SQL code blocks for any query snippets\n"
+            f"- End with a follow-up question to promote reflection\n\n"
+            f"{HINT_FEW_SHOT}\n"
+            f"NOW WRITE THE LEVEL {hint_level} HINT FOR THE STUDENT ABOVE:\n"
+        )
+
+        llm_hint_text = generate_response(
+            prompt=hint_prompt,
+            system_instruction=(
+                "You are an encouraging SQL tutor. Never give away the full answer. "
+                "Match hint specificity to the required level."
+            ),
+            temperature=0.7,
+        )
+
+        output_check = validate_output(
+            llm_response=llm_hint_text,
+            gold_standard_query=gold_standard_query,
+            schema_info=schema_info,
+        )
+
+        hint_source = "llm"
+        hint_fallback_reason = None
+        if not output_check.passed:
+            logger.warning("Output guardrails flagged: %s", output_check.violations)
+            # Use sanitized content if available, otherwise fall back
+            if output_check.sanitized_content:
+                llm_hint_text = output_check.sanitized_content
+            else:
+                # Fall back to rule-based hint
+                hint_raw = generate_sql_hint(
+                    error_type=classification.error_type,
+                    error_message=classification.error_message,
+                    student_query=student_code,
+                    attempt_count=attempt_count,
+                    problem_description=problem_description,
+                    problematic_clause=classification.problematic_clause,
+                )
+                llm_hint_text = hint_raw["hint_text"]
+                hint_source = "rule_based"
+                hint_fallback_reason = "guardrail"
+
+        hint = HintResponse(
+            hint_level=hint_level,
+            hint_text=_prepend_dialect_note(llm_hint_text, diagnosis.dialect_note),
+            hint_type="text",
+            pedagogical_rationale=diagnosis.pedagogical_rationale,
+            follow_up_question=None,  # Embedded in the LLM response itself
+            source=hint_source,
+            fallback_reason=hint_fallback_reason,
+        )
+        if hint_fallback_reason:
+            metrics.record_hint_fallback(hint_fallback_reason)
+
+    except Exception as e:
+        logger.warning(
+            "LLM hint generation failed (%s) — using rule-based fallback.", e
+        )
+        metrics.record_hint_fallback("hint_error")
+        hint_raw = generate_sql_hint(
+            error_type=classification.error_type,
+            error_message=classification.error_message,
+            student_query=student_code,
+            attempt_count=attempt_count,
+            problem_description=problem_description,
+            problematic_clause=classification.problematic_clause,
+        )
+        hint = HintResponse(
+            hint_level=hint_raw["hint_level"],
+            hint_text=_prepend_dialect_note(hint_raw["hint_text"], classification.dialect_note),
+            hint_type=hint_raw.get("hint_type", "text"),
+            pedagogical_rationale=hint_raw.get("pedagogical_rationale"),
+            follow_up_question=hint_raw.get("follow_up_question"),
+            source="rule_based",
+            fallback_reason="hint_error",
+        )
+
+    return diagnosis, hint
 
 
 @traceable(name="LLM Pipeline")
@@ -416,11 +750,18 @@ def run_pipeline_llm(
     Returns:
         A fully-populated ``SubmissionResponse``.
     """
-    submission.code = _format_sql_query(submission.code)
 
-    from backend.guardrails import validate_input, validate_output
-    from backend.llm import generate_response, generate_structured_response
-    from backend.rag.retriever import retrieve_relevant_context
+    if not get_settings().LLM_ENABLED:
+        logger.info("LLM_ENABLED=false — routing to the deterministic pipeline.")
+        return run_pipeline_deterministic(
+            submission=submission,
+            problem_description=problem_description,
+            problem_topic=problem_topic,
+            test_cases=test_cases,
+            attempt_count=attempt_count,
+        )
+
+    from backend.guardrails import validate_input
 
     start_time = time.perf_counter()
 
@@ -445,7 +786,7 @@ def run_pipeline_llm(
         {
             "test_case_id": tc.get("test_case_id", idx),
             "expected_query": tc["input_data"],
-            "check_order": tc.get("check_order", True),
+            "check_order": tc.get("check_order", False),
         }
         for idx, tc in enumerate(test_cases)
     ]
@@ -463,9 +804,9 @@ def run_pipeline_llm(
                     "test_case_id": tr["test_case_id"],
                     "passed": tr["passed"],
                     "error_message": tr.get("error_message"),
-                    "expected_columns": tr.get("expected_columns"),
+                    "label_mismatch": tr.get("label_mismatch", False),
+                    "diff_summary": tr.get("diff_summary"),
                     "actual_columns": tr.get("actual_columns"),
-                    "expected_row_count": tr.get("expected_row_count"),
                     "actual_row_count": tr.get("actual_row_count"),
                 }
             )
@@ -499,266 +840,16 @@ def run_pipeline_llm(
             timestamp=datetime.now(timezone.utc),
         )
 
-    # --- Step 2: Diagnose with LLM + RAG --------------------------------
-    logger.info("LLM Pipeline step 2/4: Diagnosing with Gemini + RAG")
-
-    # Run rule-based classifier first for baseline
-    failed_details = json.dumps(
-        [tr for tr in grading_raw["test_results"] if not tr["passed"]],
-        indent=2,
-        default=str,
+    diagnosis, hint = diagnose_and_hint(
+        student_code=submission.code,
+        grading_raw=grading_raw,
+        problem_description=problem_description,
+        problem_topic=problem_topic,
+        attempt_count=attempt_count,
+        gold_standard_query=gold_standard_query,
+        schema_info=schema_info,
+        past_struggles=past_struggles,
     )
-
-    classification = classify_sql_error(
-        error_message=grading_raw.get("student_error") or "",
-        error_type_hint=grading_raw.get("student_error_type") or "",
-        all_tests_passed=grading.passed,
-        failed_test_details=failed_details,
-        student_query=submission.code,
-    )
-
-    # Retrieve relevant SQL concept context
-    rag_query = (
-        f"SQL error: {classification.error_type}. "
-        f"Student query: {submission.code}. "
-        f"Error: {classification.error_message}"
-    )
-    rag_context = retrieve_relevant_context(
-        query=rag_query,
-        error_type=classification.error_type,
-        n_results=3,
-    )
-
-    # Course-grounded slide context (DB66 lab decks) — additive to the curated
-    # KB above, not a replacement. Never allowed to fail the pipeline: any
-    # error here just means the hint loses slide citations, same fallback
-    # contract as the curated RAG call.
-    from backend.config import get_settings
-
-    settings = get_settings()
-    slide_context: list[dict[str, Any]] = []
-    if settings.SLIDE_RAG_ENABLED:
-        try:
-            from backend.rag.slide_retriever import search_slides
-
-            slide_context = search_slides(
-                query=rag_query,
-                error_type=classification.error_type,
-                n_results=settings.SLIDE_RAG_N_RESULTS,
-            )
-        except Exception as e:
-            logger.warning("Slide RAG retrieval failed (non-fatal): %s", e)
-
-    combined_context = rag_context + slide_context
-    rag_text = (
-        "\n\n".join(f"### {doc['title']}\n{doc['content']}" for doc in combined_context)
-        if combined_context
-        else "No additional SQL reference available."
-    )
-
-    # This student's own recent failed attempts, for personalization (e.g.
-    # "keeps missing GROUP BY"). Read from interaction_history by the API layer
-    # and passed in, because this pipeline is sync and has no DB session.
-    past_struggles_text = past_struggles
-
-    if slide_context:
-        rag_text += (
-            "\n\nNote: excerpts citing 'DB66 LAB' come from the student's own course "
-            "slides, which teach Oracle SQL against a different practice schema "
-            "(employees/departments/locations). Use them only to explain the underlying "
-            "concept and cite the slide — never name those tables/columns; the student's "
-            "database is PostgreSQL with the BikeStores schema."
-        )
-
-    # Use Gemini to produce a richer diagnosis
-    try:
-        diagnosis_schema = {
-            "error_type": "string (one of: syntax_error, column_error, relation_error, join_error, aggregation_error, subquery_error, type_error, ambiguity_error, logic_error, runtime_error, timeout_error)",
-            "error_message": "string — clear explanation of the error",
-            "problematic_clause": "string — SQL clause causing the issue (SELECT, FROM, WHERE, JOIN, GROUP BY, HAVING, ORDER BY)",
-            "severity": "string — low, medium, or high",
-            "recommended_hint_level": "integer 1-4",
-            "pedagogical_rationale": "string — why this hint level",
-        }
-
-        if attempt_count <= 1:
-            rec_level = 1
-        elif attempt_count == 2:
-            rec_level = 2
-        elif attempt_count == 3:
-            rec_level = 3
-        else:
-            rec_level = 4
-
-        diagnosis_prompt = (
-            f"You are an expert SQL diagnostician. Analyse this student's SQL error.\n\n"
-            f"{DIAGNOSIS_FEW_SHOT}\n"
-            f"NOW ANALYSE THIS CASE:\n\n"
-            f"STUDENT QUERY:\n```sql\n{submission.code}\n```\n\n"
-            f"ERROR MESSAGE: {classification.error_message}\n"
-            f"RULE-BASED CLASSIFICATION: {classification.error_type}\n"
-            f"PROBLEMATIC CLAUSE: {classification.problematic_clause or 'unknown'}\n"
-            f"FAILED TESTS:\n{failed_details}\n\n"
-            f"PROBLEM: {problem_description}\n"
-            f"TOPIC: {problem_topic}\n"
-            f"ATTEMPT NUMBER: {attempt_count}\n"
-            f"RECOMMENDED HINT LEVEL: {rec_level}\n\n"
-            f"RELEVANT SQL CONCEPTS:\n{rag_text}\n\n"
-            f"Provide a detailed but concise diagnosis. Be specific about what's wrong."
-        )
-
-        llm_diagnosis = generate_structured_response(
-            prompt=diagnosis_prompt,
-            response_schema=diagnosis_schema,
-            system_instruction=(
-                "You are an SQL education diagnostician. Classify errors precisely "
-                "and recommend appropriate hint levels based on the student's attempt count."
-            ),
-            temperature=0.3,
-        )
-
-        diagnosis = DiagnosisResult(
-            error_type=ErrorTypeEnum(
-                llm_diagnosis.get("error_type", classification.error_type)
-            ),
-            error_message=llm_diagnosis.get(
-                "error_message", classification.error_message
-            ),
-            problematic_clause=llm_diagnosis.get(
-                "problematic_clause", classification.problematic_clause
-            ),
-            severity=llm_diagnosis.get("severity", classification.severity),
-            recommended_hint_level=int(
-                llm_diagnosis.get("recommended_hint_level", rec_level)
-            ),
-            pedagogical_rationale=llm_diagnosis.get(
-                "pedagogical_rationale",
-                f"LLM diagnosis for attempt {attempt_count}.",
-            ),
-        )
-    except Exception as e:
-        logger.warning("LLM diagnosis failed (%s) — using rule-based fallback.", e)
-        if attempt_count <= 1:
-            rec_level = 1
-        elif attempt_count == 2:
-            rec_level = 2
-        elif attempt_count == 3:
-            rec_level = 3
-        else:
-            rec_level = 4
-
-        diagnosis = DiagnosisResult(
-            error_type=ErrorTypeEnum(classification.error_type),
-            error_message=classification.error_message,
-            problematic_clause=classification.problematic_clause,
-            severity=classification.severity,
-            recommended_hint_level=rec_level,
-            pedagogical_rationale=(
-                f"Rule-based diagnosis (LLM fallback). Student attempt {attempt_count}."
-            ),
-        )
-
-    # --- Step 3: Generate hint with LLM + RAG ---------------------------
-    logger.info("LLM Pipeline step 3/4: Generating hint with Gemini + RAG")
-
-    try:
-        hint_level = diagnosis.recommended_hint_level
-        level_descriptions = {
-            1: "Attention: Direct their attention to the problematic clause WITHOUT explaining the error.",
-            2: "Category: Explain what TYPE of SQL error they made and the general principle.",
-            3: "Concept: Show a SIMILAR but DIFFERENT SQL example demonstrating the correct pattern.",
-            4: "Solution Scaffold: Provide an incomplete SQL template with blanks (___) for them to fill in.",
-        }
-
-        hint_prompt = (
-            f"You are a warm, encouraging SQL tutor. Generate a hint for this student.\n\n"
-            f"STUDENT QUERY:\n```sql\n{submission.code}\n```\n\n"
-            f"DIAGNOSIS:\n"
-            f"- Error type: {diagnosis.error_type}\n"
-            f"- Error message: {diagnosis.error_message}\n"
-            f"- Problematic clause: {diagnosis.problematic_clause or 'unknown'}\n\n"
-            f"PROBLEM: {problem_description}\n"
-            f"ATTEMPT: {attempt_count}\n"
-            f"REQUIRED HINT LEVEL: {hint_level} — {level_descriptions.get(hint_level, '')}\n\n"
-            f"RELEVANT SQL CONCEPTS:\n{rag_text}\n\n"
-            + (
-                f"THIS STUDENT'S PAST STRUGGLES (use only if a pattern is relevant — "
-                f"e.g. call out a recurring mistake — never just repeat this list):\n"
-                f"{past_struggles_text}\n\n"
-                if past_struggles_text
-                else ""
-            )
-            + f"RULES:\n"
-            f"- NEVER reveal the complete SQL solution\n"
-            f"- Be encouraging — use positive framing\n"
-            f"- Keep the hint concise (2-4 sentences for levels 1-2, up to a paragraph for 3-4)\n"
-            f"- Use SQL code blocks for any query snippets\n"
-            f"- End with a follow-up question to promote reflection\n\n"
-            f"{HINT_FEW_SHOT}\n"
-            f"NOW WRITE THE LEVEL {hint_level} HINT FOR THE STUDENT ABOVE:\n"
-        )
-
-        llm_hint_text = generate_response(
-            prompt=hint_prompt,
-            system_instruction=(
-                "You are an encouraging SQL tutor. Never give away the full answer. "
-                "Match hint specificity to the required level."
-            ),
-            temperature=0.7,
-        )
-
-        # --- Step 4: Output guardrails -----------------------------------
-        logger.info("LLM Pipeline step 4/4: Output guardrails")
-        output_check = validate_output(
-            llm_response=llm_hint_text,
-            gold_standard_query=gold_standard_query,
-            schema_info=schema_info,
-        )
-
-        if not output_check.passed:
-            logger.warning("Output guardrails flagged: %s", output_check.violations)
-            # Use sanitized content if available, otherwise fall back
-            if output_check.sanitized_content:
-                llm_hint_text = output_check.sanitized_content
-            else:
-                # Fall back to rule-based hint
-                hint_raw = generate_sql_hint(
-                    error_type=classification.error_type,
-                    error_message=classification.error_message,
-                    student_query=submission.code,
-                    attempt_count=attempt_count,
-                    problem_description=problem_description,
-                    problematic_clause=classification.problematic_clause,
-                )
-                llm_hint_text = hint_raw["hint_text"]
-
-        hint = HintResponse(
-            hint_level=hint_level,
-            hint_text=llm_hint_text,
-            hint_type="text",
-            pedagogical_rationale=diagnosis.pedagogical_rationale,
-            follow_up_question=None,  # Embedded in the LLM response itself
-        )
-
-    except Exception as e:
-        logger.warning(
-            "LLM hint generation failed (%s) — using rule-based fallback.", e
-        )
-        hint_raw = generate_sql_hint(
-            error_type=classification.error_type,
-            error_message=classification.error_message,
-            student_query=submission.code,
-            attempt_count=attempt_count,
-            problem_description=problem_description,
-            problematic_clause=classification.problematic_clause,
-        )
-        hint = HintResponse(
-            hint_level=hint_raw["hint_level"],
-            hint_text=hint_raw["hint_text"],
-            hint_type=hint_raw.get("hint_type", "text"),
-            pedagogical_rationale=hint_raw.get("pedagogical_rationale"),
-            follow_up_question=hint_raw.get("follow_up_question"),
-        )
 
     elapsed_ms = int((time.perf_counter() - start_time) * 1000)
     logger.info("LLM Pipeline complete in %dms", elapsed_ms)

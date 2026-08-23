@@ -297,6 +297,7 @@ async def seed_problems(session: AsyncSession) -> None:
                     is_hidden=False,
                     order=i,
                     description=tc.get("description", ""),
+                    check_order=tc.get("check_order", False),
                 )
             )
 
