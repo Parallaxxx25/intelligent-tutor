@@ -15,12 +15,14 @@ from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from backend.api.routes import router as api_router
 from backend.api.v1_routes import router as v1_router
 from backend.api.websocket import router as ws_router
 from backend.config import get_settings
-from backend.db.database import close_db, init_db
+from backend.db.database import close_db, engine, init_db
 from backend.memory.redis_session import get_session_manager
 
 settings = get_settings()
@@ -121,3 +123,22 @@ async def root() -> dict[str, str]:
         "message": "Intelligent Tutoring System API",
         "docs": "/docs",
     }
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Liveness + dependency check for uptime monitoring (503 if degraded)."""
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    redis_ok = await get_session_manager().ping()
+    ok = db_ok and redis_ok
+
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ok" if ok else "degraded", "db": db_ok, "redis": redis_ok},
+    )
