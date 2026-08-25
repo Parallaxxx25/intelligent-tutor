@@ -19,10 +19,19 @@ import csv
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.agents.escalation_policy import EscalationSignals
+
 
 @dataclass
 class EvalSample:
-    """One evaluation sample for RAGAS scoring."""
+    """One evaluation sample for RAGAS scoring.
+
+    ``hint_level`` is expected to equal ``decide_hint_level(signals_from(
+    self)).level`` under the v2 escalation policy (backend/agents/
+    escalation_policy.py) — see test_ragas_evaluation.py. It is asserted
+    against the policy, not hand-labeled, so a sample's level is only ever
+    "wrong" if it disagrees with the policy's own documented rules.
+    """
 
     sample_id: str
     error_type: str
@@ -36,6 +45,31 @@ class EvalSample:
     ground_truth_hint: str = ""
     reference_answer: str = ""
     problematic_clause: str | None = None
+    # --- v2 escalation-policy signals (all defaulted -> the 16 samples
+    # below load unchanged; only a sample deliberately exercising a
+    # history-dependent driver needs to set these) ---
+    error_type_history: tuple[str, ...] = field(default_factory=tuple)
+    prev_query: str | None = None
+    prev_hint_level: int | None = None
+    seconds_since_prev: float | None = None
+    topic_mastery: str | None = None
+
+
+def signals_from(sample: EvalSample) -> EscalationSignals:
+    """Build the v2 policy's EscalationSignals from one EvalSample."""
+    return EscalationSignals(
+        attempt_count=sample.attempt_count,
+        error_type=sample.error_type,
+        error_type_history=tuple(sample.error_type_history),
+        query_history=(sample.prev_query,) if sample.prev_query else (),
+        hint_level_history=(
+            (sample.prev_hint_level,) if sample.prev_hint_level is not None else ()
+        ),
+        seconds_since_prev=sample.seconds_since_prev,
+        topic_mastery=sample.topic_mastery,
+        current_query=sample.student_query,
+        starter_code=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +298,13 @@ EVAL_DATASET: list[EvalSample] = [
         problematic_clause="SELECT",
     ),
 
-    # 10. timeout_error — Level 1 (Attention)
+    # 10. timeout_error — Level 2 (Category). Under v2, timeout is the one
+    # "blocking"-depth error type (ERROR_DEPTH in escalation_policy.py) and
+    # escalates one level past the attempt-count floor even on attempt 1 —
+    # a timeout is structural (Cartesian product), not a typo, and Sweller's
+    # noise-vs-signal distinction says that's worth naming outright rather
+    # than making the student guess from a bare nudge. See
+    # docs/hint-escalation-policy-v2.md §2, row 3.
     EvalSample(
         sample_id="timeout_01",
         error_type="timeout_error",
@@ -273,13 +313,15 @@ EVAL_DATASET: list[EvalSample] = [
         ),
         error_message="statement timeout — query exceeded time limit",
         problem_description="List orders with product details.",
-        hint_level=1,
+        hint_level=2,
         attempt_count=1,
-        expected_hint_keywords=["timeout", "Cartesian", "JOIN"],
+        expected_hint_keywords=["timeout", "Cartesian", "missing", "category"],
         expected_rag_topics=["joins"],
         ground_truth_hint=(
-            "Your query is taking too long because you're creating a "
-            "Cartesian product. Check your FROM clause for missing JOIN conditions."
+            "Your query timed out — it's too slow. This is usually a Cartesian "
+            "product: a missing JOIN condition causing every row in one table "
+            "to pair with every row in another. Check that each table in your "
+            "FROM clause has a matching ON condition."
         ),
         reference_answer=(
             "Add proper JOINs: FROM sales.orders o "
@@ -458,6 +500,19 @@ def load_eval_dataset_from_csv(csv_path: str) -> list[EvalSample]:
                 expected_rag_topics=[k.strip() for k in row.get("expected_rag_topics", "").split(",") if k.strip()],
                 ground_truth_hint=row.get("ground_truth_hint", ""),
                 reference_answer=row.get("reference_answer", ""),
-                problematic_clause=row.get("problematic_clause", None)
+                problematic_clause=row.get("problematic_clause", None),
+                error_type_history=tuple(
+                    v.strip() for v in row.get("error_type_history", "").split(",") if v.strip()
+                ),
+                prev_query=row.get("prev_query") or None,
+                prev_hint_level=(
+                    _safe_int(row["prev_hint_level"], None, "prev_hint_level", sample_id)
+                    if row.get("prev_hint_level")
+                    else None
+                ),
+                seconds_since_prev=(
+                    float(row["seconds_since_prev"]) if row.get("seconds_since_prev") else None
+                ),
+                topic_mastery=row.get("topic_mastery") or None,
             ))
     return dataset

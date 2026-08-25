@@ -110,6 +110,13 @@ class DiagnosisResult(BaseModel):
         description="Set when the query is valid MySQL but not Postgres — "
         "named in the hint, never used to change the verdict",
     )
+    escalation_trace: Optional[dict[str, Any]] = Field(
+        None,
+        description="EscalationDecision.as_dict() from the v2 hint-escalation "
+        "policy (level, drivers, policy_version, signals) — structured "
+        "rationale for the future teacher-dashboard override feature. "
+        "None only when the fallback (attempt-count-only) path was used.",
+    )
 
 
 class HintResponse(BaseModel):

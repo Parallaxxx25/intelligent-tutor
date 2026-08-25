@@ -24,11 +24,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from backend.agents.escalation_policy import decide_hint_level
 from backend.evaluation.eval_dataset import (
     EVAL_DATASET,
     EvalSample,
     get_error_type_coverage,
     get_hint_level_distribution,
+    signals_from,
 )
 from backend.evaluation.ragas_evaluator import (
     EvaluationReport,
@@ -114,20 +116,19 @@ class TestEvalDataset:
         for s in no_error:
             assert s.hint_level == 0
 
-    def test_attempt_count_matches_hint_level(self):
-        """Attempt count should follow the escalation policy."""
+    def test_hint_level_matches_v2_escalation_policy(self):
+        """Every sample's stored hint_level must equal what the v2 policy
+        (backend/agents/escalation_policy.py) derives from its own signals
+        -- a dataset/code drift guard, not a hand-label. Replaces the old
+        assertion that hint_level == attempt_count, which encoded the v1
+        rule this dataset no longer follows (see docs/hint-escalation-policy-v2.md)."""
         for sample in EVAL_DATASET:
             if sample.error_type == "no_error":
                 continue
-            expected_level = (
-                1 if sample.attempt_count <= 1
-                else 2 if sample.attempt_count == 2
-                else 3 if sample.attempt_count == 3
-                else 4
-            )
-            assert sample.hint_level == expected_level, (
-                f"{sample.sample_id}: attempt {sample.attempt_count} should be "
-                f"level {expected_level}, got {sample.hint_level}"
+            decision = decide_hint_level(signals_from(sample))
+            assert sample.hint_level == decision.level, (
+                f"{sample.sample_id}: policy says level {decision.level} "
+                f"(drivers={decision.drivers}), dataset has {sample.hint_level}"
             )
 
 
@@ -236,6 +237,43 @@ class TestNoSolutionLeakage:
         assert 0.0 <= score <= 1.0
 
 
+class TestNoSolutionLeakageUnaffectedByEscalationLevel:
+    """Regression guard for the v2 escalation policy: it changes WHICH
+    level is selected, never the level's content contract. LEVEL_DESCRIPTIONS
+    and the four _level_N_* rule-based generators in hint_generator.py are
+    untouched code -- forcing each level directly (bypassing selection
+    entirely, the same way the pipeline does once decide_hint_level has
+    already run) must leak exactly as much as it always did.
+
+    Patches the LLM call to fail (matching test_tools.py's own
+    test_llm_fallback_on_error convention) so this exercises the rule-based
+    generators deterministically, with no network dependency."""
+
+    @patch("backend.tools.hint_generator._generate_hint_with_llm")
+    def test_rule_based_hint_never_leaks_at_any_level(self, mock_llm):
+        from backend.tools.hint_generator import generate_sql_hint
+
+        mock_llm.side_effect = RuntimeError("LLM unavailable (forced for this test)")
+
+        for sample in EVAL_DATASET:
+            if sample.error_type == "no_error" or not sample.reference_answer:
+                continue
+            for forced_level in (1, 2, 3, 4):
+                hint = generate_sql_hint(
+                    error_type=sample.error_type,
+                    error_message=sample.error_message,
+                    student_query=sample.student_query,
+                    problem_description=sample.problem_description,
+                    problematic_clause=sample.problematic_clause,
+                    hint_level=forced_level,
+                )
+                score = score_no_solution_leakage(hint["hint_text"], sample.reference_answer)
+                assert score == 1.0, (
+                    f"{sample.sample_id} at forced level {forced_level} leaked "
+                    f"(score={score}): {hint['hint_text']!r}"
+                )
+
+
 # ===================================================================
 # TestRagasEvaluator — evaluator with mocked LLM
 # ===================================================================
@@ -297,6 +335,28 @@ class TestRagasEvaluator:
         assert report.error_types_covered == 2
         assert report.avg_hint_level_compliance > 0.0
         assert report.avg_no_solution_leakage > 0.0
+
+    def test_evaluate_batch_stamps_current_policy_version(self):
+        """Every report self-tags with the policy that produced it, so a
+        v1-era report (policy_version="") is never conflated with a v2 run
+        when comparing results across time."""
+        from backend.agents.escalation_policy import POLICY_VERSION
+
+        evaluator = RagasEvaluator(llm=None, embeddings=None)
+        report = evaluator.evaluate_batch(
+            [
+                {
+                    "sample_id": "s1",
+                    "error_type": "syntax_error",
+                    "hint_level": 1,
+                    "user_input": "x",
+                    "response": "Check your FROM clause.",
+                    "retrieved_contexts": [],
+                    "reference": "",
+                }
+            ]
+        )
+        assert report.policy_version == POLICY_VERSION
 
     def test_evaluate_batch_with_all_dataset_samples(self):
         """Evaluate the full dataset (custom metrics only, no LLM)."""
@@ -453,6 +513,23 @@ class TestReportFormatters:
         """CSV report should have a TAXONOMY_COVERAGE row."""
         csv_str = format_report_csv(sample_report)
         assert "TAXONOMY_COVERAGE" in csv_str
+
+    def test_csv_and_json_report_carry_policy_version(self, sample_report):
+        """Old and new results must be distinguishable in exported reports."""
+        sample_report.policy_version = "v2"
+
+        csv_str = format_report_csv(sample_report)
+        reader = csv.reader(io.StringIO(csv_str))
+        header = next(reader)
+        assert "policy_version" in header
+        first_data_row = next(reader)
+        assert first_data_row[header.index("policy_version")] == "v2"
+
+        json_data = json.loads(format_report_json(sample_report))
+        assert json_data["policy_version"] == "v2"
+
+        md = format_report_markdown(sample_report)
+        assert "v2" in md
 
     def test_csv_export_creates_file(self, sample_report):
         """export_report_csv should create a file on disk."""

@@ -21,6 +21,8 @@ from typing import Any
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from backend.agents.escalation_policy import attempt_count_floor
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +54,8 @@ class SQLHintGeneratorInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Hint-level escalation policy
+# Hint content contracts (level SELECTION lives in backend.agents.escalation_policy —
+# this module only renders the level it's given)
 # ---------------------------------------------------------------------------
 
 LEVEL_DESCRIPTIONS = {
@@ -82,18 +85,6 @@ HINT_TYPE_MAP = {1: "text", 2: "text", 3: "example", 4: "code_template"}
 # ---------------------------------------------------------------------------
 # LLM-based hint generation
 # ---------------------------------------------------------------------------
-
-def _determine_hint_level(attempt_count: int) -> int:
-    """Map attempt count to hint escalation level (1-4)."""
-    if attempt_count <= 1:
-        return 1
-    elif attempt_count == 2:
-        return 2
-    elif attempt_count == 3:
-        return 3
-    else:
-        return 4
-
 
 def _build_hint_prompt(
     error_type: str,
@@ -234,15 +225,19 @@ def generate_sql_hint(
     attempt_count: int = 1,
     problem_description: str = "",
     problematic_clause: str | None = None,
+    hint_level: int | None = None,
 ) -> dict[str, str | int]:
     """
     Generate a hint using Gemini LLM with rule-based fallback.
 
-    Hint-level escalation policy:
-      - Attempt 1       → Level 1 (Attention)
-      - Attempt 2       → Level 2 (Category)
-      - Attempt 3       → Level 3 (Concept)
-      - Attempt 4+      → Level 4 (Solution scaffold)
+    ``hint_level``: pre-computed by the v2 escalation policy
+    (backend.agents.escalation_policy.decide_hint_level), which the caller
+    runs against the full EscalationSignals (attempt/error history, topic
+    mastery, dwell time...) this function has no access to. When omitted —
+    a caller with only ``attempt_count``, e.g. the standalone LangChain
+    tool below — this degrades to the v1 fallback rule
+    (``attempt_count_floor``), satisfying the "must degrade gracefully"
+    requirement without duplicating that rule here.
     """
     # Correct answer — congratulate (no LLM needed)
     if error_type == "no_error":
@@ -260,7 +255,7 @@ def generate_sql_hint(
             ),
         }
 
-    hint_level = _determine_hint_level(attempt_count)
+    hint_level = hint_level if hint_level is not None else attempt_count_floor(attempt_count)
 
     # --- Primary path: LLM-generated hint ---
     try:

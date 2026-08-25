@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import csv
 import io
 
+from backend.agents.escalation_policy import POLICY_VERSION
 from backend.config import get_settings
 from backend.evaluation.ragas_evaluator import (
     _avg,
@@ -54,6 +55,8 @@ class JudgeSampleResult:
 @dataclass
 class JudgeEvaluationReport:
     timestamp: str = ""
+    # "" on a report predating this field -- never conflate with a v2 run.
+    policy_version: str = ""
     total_samples: int = 0
     avg_hint_level_compliance: float = 0.0
     avg_no_solution_leakage: float = 0.0
@@ -69,6 +72,7 @@ def format_judge_report_markdown(report: JudgeEvaluationReport) -> str:
         "# OpenRouter LLM Judge Evaluation Report",
         "",
         f"**Date:** {report.timestamp}",
+        f"**Policy Version:** {report.policy_version or 'unversioned (pre-v2)'}",
         f"**Samples:** {report.total_samples}",
         "",
         "## Aggregate Scores",
@@ -107,6 +111,7 @@ def format_judge_report_markdown(report: JudgeEvaluationReport) -> str:
 def format_judge_report_json(report: JudgeEvaluationReport) -> str:
     data = {
         "timestamp": report.timestamp,
+        "policy_version": report.policy_version,
         "total_samples": report.total_samples,
         "aggregate_scores": {
             "hint_level_compliance": report.avg_hint_level_compliance,
@@ -146,6 +151,7 @@ def format_judge_report_csv(report: JudgeEvaluationReport) -> str:
             "no_solution_leakage",
             "judge_quality_score",
             "judge_rationale",
+            "policy_version",
         ]
     )
     for r in report.sample_results:
@@ -158,6 +164,7 @@ def format_judge_report_csv(report: JudgeEvaluationReport) -> str:
                 _fmt_csv(r.no_solution_leakage),
                 _fmt_csv(r.judge_quality_score),
                 r.judge_rationale,
+                report.policy_version,
             ]
         )
     writer.writerow([])
@@ -170,6 +177,7 @@ def format_judge_report_csv(report: JudgeEvaluationReport) -> str:
             _fmt_csv(report.avg_no_solution_leakage),
             _fmt_csv(report.avg_judge_quality_score),
             "",
+            report.policy_version,
         ]
     )
     writer.writerow([])
@@ -299,6 +307,7 @@ class OpenRouterJudge:
 
         report = JudgeEvaluationReport(
             timestamp=datetime.now(timezone.utc).isoformat(),
+            policy_version=POLICY_VERSION,
             total_samples=len(eval_samples),
         )
 

@@ -12,6 +12,7 @@ Version: 2026-03-20 (LangGraph migration)
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from langsmith import traceable
 import logging
@@ -23,6 +24,7 @@ from langgraph.graph import END, StateGraph
 
 from backend import metrics
 from backend.agents.diagnostician import diagnose_errors
+from backend.agents.escalation_policy import EscalationSignals, decide_hint_level
 from backend.agents.few_shot_examples import DIAGNOSIS_FEW_SHOT, HINT_FEW_SHOT
 from backend.agents.tutor import generate_hint
 from backend.config import get_settings
@@ -62,6 +64,7 @@ def run_pipeline_deterministic(
     problem_topic: str,
     test_cases: list[dict[str, Any]],
     attempt_count: int = 1,
+    signals: EscalationSignals | None = None,
 ) -> SubmissionResponse:
     """
     Run the full SQL tutoring pipeline **without** calling the LLM.
@@ -76,6 +79,11 @@ def run_pipeline_deterministic(
         problem_topic: Topic tag (e.g. "JOINs", "Aggregation").
         test_cases: List of test case dicts with ``expected_query`` keys.
         attempt_count: Number of times the student has attempted this problem.
+        signals: Attempt/error history, topic mastery, dwell time — built
+            by the caller from Postgres (see backend/db/queries.py). None
+            degrades to the v1 attempt-count-only fallback. error_type and
+            current_query are always overridden below from this attempt's
+            own classification, regardless of what the caller supplied.
 
     Returns:
         A fully-populated ``SubmissionResponse``.
@@ -143,15 +151,15 @@ def run_pipeline_deterministic(
         student_query=submission.code,
     )
 
-    # Determine hint level from attempt count
-    if attempt_count <= 1:
-        recommended_level = 1
-    elif attempt_count == 2:
-        recommended_level = 2
-    elif attempt_count == 3:
-        recommended_level = 3
-    else:
-        recommended_level = 4
+    # Determine hint level via the v2 escalation policy (see
+    # backend/agents/escalation_policy.py + docs/hint-escalation-policy-v2.md).
+    resolved_signals = dataclasses.replace(
+        signals or EscalationSignals(attempt_count=attempt_count),
+        error_type=classification.error_type,
+        current_query=submission.code,
+    )
+    decision = decide_hint_level(resolved_signals)
+    recommended_level = decision.level
 
     diagnosis = DiagnosisResult(
         error_type=ErrorTypeEnum(classification.error_type),
@@ -160,13 +168,12 @@ def run_pipeline_deterministic(
         severity=classification.severity,
         recommended_hint_level=recommended_level,
         pedagogical_rationale=(
-            f"Student is on attempt {attempt_count}. "
-            f"Error type is {classification.error_type} "
-            f"(clause: {classification.problematic_clause}) with "
-            f"{classification.severity} severity. "
-            f"Escalating to hint level {recommended_level}."
+            f"Attempt {attempt_count}. Error type {classification.error_type} "
+            f"(clause: {classification.problematic_clause}), "
+            f"{classification.severity} severity. {decision.rationale()}"
         ),
         dialect_note=classification.dialect_note,
+        escalation_trace=decision.as_dict(),
     )
 
     # --- Step 3: Generate hint (skip if all passed) ---------------------
@@ -180,6 +187,7 @@ def run_pipeline_deterministic(
             attempt_count=attempt_count,
             problem_description=problem_description,
             problematic_clause=classification.problematic_clause,
+            hint_level=recommended_level,
         )
         hint = HintResponse(
             hint_level=hint_raw["hint_level"],
@@ -217,6 +225,7 @@ class PipelineState(TypedDict, total=False):
     attempt_count: int
     problem_description: str
     problem_topic: str
+    escalation_signals: Any  # EscalationSignals | None, built by the caller
     # Set by diagnostician node
     classification: Any
     diagnosis_error_type: str
@@ -226,6 +235,7 @@ class PipelineState(TypedDict, total=False):
     diagnosis_dialect_note: str | None
     recommended_hint_level: int
     pedagogical_rationale: str
+    escalation_trace: dict
     # Set by tutor node
     hint_raw: dict
     hint_text: str
@@ -256,9 +266,14 @@ def run_pipeline_langgraph(
     problem_topic: str,
     test_cases: list[dict[str, Any]],
     attempt_count: int = 1,
+    signals: EscalationSignals | None = None,
 ) -> SubmissionResponse:
     """
     Run the SQL tutoring pipeline using LangGraph.
+
+    ``signals``: attempt/error history, topic mastery, dwell time — built
+    by the caller from Postgres. None degrades to the v1 fallback rule
+    inside the diagnostician node (see backend/agents/diagnostician.py).
     """
     start_time = time.perf_counter()
 
@@ -332,6 +347,7 @@ def run_pipeline_langgraph(
             "attempt_count": attempt_count,
             "problem_description": problem_description,
             "problem_topic": problem_topic,
+            "escalation_signals": signals,
         }
     )
 
@@ -347,6 +363,7 @@ def run_pipeline_langgraph(
             "pedagogical_rationale", "Generated by LangGraph pipeline."
         ),
         dialect_note=dialect_note,
+        escalation_trace=graph_output.get("escalation_trace"),
     )
 
     hint_raw = graph_output.get("hint_raw", {})
@@ -392,6 +409,7 @@ def diagnose_and_hint(
     gold_standard_query: str = "",
     schema_info: dict[str, Any] | None = None,
     past_struggles: str = "",
+    signals: EscalationSignals | None = None,
 ) -> tuple[DiagnosisResult, HintResponse]:
     """
     Gemini diagnosis + hint generation for an already-graded, already-failed
@@ -402,6 +420,14 @@ def diagnose_and_hint(
     what it needs (this student's grading_raw, problem text, attempt count),
     releases its session, calls this function, then reacquires a session
     only to persist the result. This function itself touches no DB session.
+
+    ``signals``: attempt/error history, topic mastery, dwell time — built
+    by the caller from Postgres. None degrades to the v1 attempt-count-only
+    fallback. The v2 policy (backend/agents/escalation_policy.py) is
+    authoritative for the level actually served; Gemini's own proposed
+    level is still requested and recorded in the trace as
+    ``llm_proposed_level`` (a reportable agreement-rate datum), never used
+    to raise or lower what's served — see ADR-0005.
 
     Never call this for a passing submission — callers own the
     "all tests passed" short-circuit, same as run_pipeline_llm did.
@@ -425,14 +451,13 @@ def diagnose_and_hint(
         student_query=student_code,
     )
 
-    if attempt_count <= 1:
-        base_rec_level = 1
-    elif attempt_count == 2:
-        base_rec_level = 2
-    elif attempt_count == 3:
-        base_rec_level = 3
-    else:
-        base_rec_level = 4
+    resolved_signals = dataclasses.replace(
+        signals or EscalationSignals(attempt_count=attempt_count),
+        error_type=classification.error_type,
+        current_query=student_code,
+    )
+    decision = decide_hint_level(resolved_signals)
+    base_rec_level = decision.level
 
     # student_code is about to be embedded verbatim into a Gemini prompt —
     # gate that here rather than at the caller, since this is the only
@@ -451,8 +476,12 @@ def diagnose_and_hint(
             problematic_clause=classification.problematic_clause,
             severity=classification.severity,
             recommended_hint_level=base_rec_level,
-            pedagogical_rationale="Rule-based diagnosis (input guardrail rejected the request).",
+            pedagogical_rationale=(
+                "Rule-based diagnosis (input guardrail rejected the request). "
+                f"{decision.rationale()}"
+            ),
             dialect_note=classification.dialect_note,
+            escalation_trace=decision.as_dict(),
         )
         hint_raw = generate_sql_hint(
             error_type=classification.error_type,
@@ -461,6 +490,7 @@ def diagnose_and_hint(
             attempt_count=attempt_count,
             problem_description=problem_description,
             problematic_clause=classification.problematic_clause,
+            hint_level=base_rec_level,
         )
         hint = HintResponse(
             hint_level=hint_raw["hint_level"],
@@ -564,6 +594,12 @@ def diagnose_and_hint(
             temperature=0.3,
         )
 
+        # recommended_hint_level is the v2 policy's decision (rec_level ==
+        # base_rec_level == decision.level), not Gemini's — the policy is
+        # authoritative (ADR-0005). Gemini's own proposal is recorded in
+        # the trace as llm_proposed_level: a reportable agreement-rate
+        # datum, never used to raise or lower what's actually served.
+        llm_proposed_level = int(llm_diagnosis.get("recommended_hint_level", rec_level))
         diagnosis = DiagnosisResult(
             error_type=ErrorTypeEnum(
                 llm_diagnosis.get("error_type", classification.error_type)
@@ -575,17 +611,13 @@ def diagnose_and_hint(
                 "problematic_clause", classification.problematic_clause
             ),
             severity=llm_diagnosis.get("severity", classification.severity),
-            # Clamped to the attempt-derived level — Gemini claiming level 4
-            # on attempt 1 must never hand out the solution template early.
-            recommended_hint_level=min(
-                int(llm_diagnosis.get("recommended_hint_level", rec_level)),
-                rec_level,
-            ),
+            recommended_hint_level=rec_level,
             pedagogical_rationale=llm_diagnosis.get(
                 "pedagogical_rationale",
                 f"LLM diagnosis for attempt {attempt_count}.",
             ),
             dialect_note=classification.dialect_note,
+            escalation_trace={**decision.as_dict(), "llm_proposed_level": llm_proposed_level},
         )
     except Exception as e:
         logger.warning("LLM diagnosis failed (%s) — using rule-based fallback.", e)
@@ -598,9 +630,11 @@ def diagnose_and_hint(
             severity=classification.severity,
             recommended_hint_level=rec_level,
             pedagogical_rationale=(
-                f"Rule-based diagnosis (LLM fallback). Student attempt {attempt_count}."
+                f"Rule-based diagnosis (LLM fallback). Student attempt {attempt_count}. "
+                f"{decision.rationale()}"
             ),
             dialect_note=classification.dialect_note,
+            escalation_trace=decision.as_dict(),
         )
 
     # --- Generate hint with LLM + RAG ------------------------------------
@@ -672,6 +706,7 @@ def diagnose_and_hint(
                     attempt_count=attempt_count,
                     problem_description=problem_description,
                     problematic_clause=classification.problematic_clause,
+                    hint_level=hint_level,
                 )
                 llm_hint_text = hint_raw["hint_text"]
                 hint_source = "rule_based"
@@ -701,6 +736,7 @@ def diagnose_and_hint(
             attempt_count=attempt_count,
             problem_description=problem_description,
             problematic_clause=classification.problematic_clause,
+            hint_level=hint_level,
         )
         hint = HintResponse(
             hint_level=hint_raw["hint_level"],
@@ -725,6 +761,7 @@ def run_pipeline_llm(
     gold_standard_query: str = "",
     schema_info: dict[str, Any] | None = None,
     past_struggles: str = "",
+    signals: EscalationSignals | None = None,
 ) -> SubmissionResponse:
     """
     Run the SQL tutoring pipeline with Gemini LLM reasoning + RAG.
@@ -746,6 +783,8 @@ def run_pipeline_llm(
         attempt_count: Number of attempts on this problem.
         gold_standard_query: The gold-standard SQL for leakage detection.
         schema_info: Dict with 'tables' and 'columns' for hallucination check.
+        signals: Attempt/error history, topic mastery, dwell time — built
+            by the caller from Postgres. None degrades to the v1 fallback.
 
     Returns:
         A fully-populated ``SubmissionResponse``.
@@ -759,6 +798,7 @@ def run_pipeline_llm(
             problem_topic=problem_topic,
             test_cases=test_cases,
             attempt_count=attempt_count,
+            signals=signals,
         )
 
     from backend.guardrails import validate_input
@@ -777,6 +817,7 @@ def run_pipeline_llm(
             problem_topic=problem_topic,
             test_cases=test_cases,
             attempt_count=attempt_count,
+            signals=signals,
         )
 
     # --- Step 1: Grade (deterministic — same as Phase 1) -----------------
@@ -848,6 +889,7 @@ def run_pipeline_llm(
         attempt_count=attempt_count,
         gold_standard_query=gold_standard_query,
         schema_info=schema_info,
+        signals=signals,
         past_struggles=past_struggles,
     )
 

@@ -474,11 +474,15 @@ class TestRealDeterministicPipeline:
         assert result.overall_passed is False
         assert result.diagnosis.error_type in ("relation_error", "runtime_error")
 
-    def test_hint_escalation_across_attempts(self) -> None:
-        """Hint level should escalate with each attempt."""
+    def test_hint_escalation_without_signals_matches_v1_fallback(self) -> None:
+        """With no EscalationSignals wired (the degenerate case -- see
+        backend/agents/escalation_policy.py::attempt_count_floor), the v2
+        policy must reproduce the old attempt-count-only rule exactly.
+        This is the "must degrade gracefully" requirement, not evidence
+        that v2 IS attempt-count-only -- see the next test for that."""
         from backend.agents.supervisor import run_pipeline_deterministic
 
-        print("\n[PIPELINE] Real Deterministic Pipeline -- Hint Escalation:")
+        print("\n[PIPELINE] Real Deterministic Pipeline -- Fallback Escalation:")
         wrong_query = "SELECT first_name FROM sales.customers ORDER BY last_name"
 
         for attempt in range(1, 5):
@@ -497,6 +501,49 @@ class TestRealDeterministicPipeline:
             )
 
             assert result.hint.hint_level == attempt
+            assert result.diagnosis.escalation_trace["drivers"] == []
+
+    def test_hint_escalation_with_signals_reflects_v2_policy(self) -> None:
+        """Wiring real EscalationSignals (the /api/submit path) must diverge
+        from plain attempt-count once a driver fires -- this query classifies
+        as logic_error (conceptual depth, see ERROR_DEPTH), so two identical
+        errors in a row should escalate one level past the attempt-count
+        floor via decide_hint_level's own math, and the pipeline's
+        escalation_trace must say so."""
+        from backend.agents.escalation_policy import EscalationSignals, decide_hint_level
+        from backend.agents.supervisor import run_pipeline_deterministic
+
+        wrong_query = "SELECT first_name FROM sales.customers ORDER BY last_name"
+        signals = EscalationSignals(
+            attempt_count=2,
+            error_type_history=("logic_error", "logic_error"),
+        )
+        submission = _make_submission(wrong_query)
+        result = run_pipeline_deterministic(
+            submission=submission,
+            problem_description=PROBLEM_1_DESC,
+            problem_topic=PROBLEM_1_TOPIC,
+            test_cases=PROBLEM_1_TEST_CASES,
+            attempt_count=2,
+            signals=signals,
+        )
+
+        print("\n[PIPELINE] Real Deterministic Pipeline -- v2 Signal-Driven Escalation:")
+        print(f"   Hint Level : {result.hint.hint_level}")
+        print(f"   Drivers    : {result.diagnosis.escalation_trace['drivers']}")
+
+        expected = decide_hint_level(
+            EscalationSignals(
+                attempt_count=2,
+                error_type="logic_error",
+                error_type_history=("logic_error", "logic_error"),
+                current_query=wrong_query,
+            )
+        )
+        assert result.hint.hint_level == expected.level
+        assert result.hint.hint_level == 3  # attempt-count floor 2, +1 conceptual bump
+        assert result.hint.hint_level != 2  # would be 2 under the old attempt-count rule
+        assert "error_type_stable_2x" in result.diagnosis.escalation_trace["drivers"]
 
 
 # ===================================================================

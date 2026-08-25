@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.agents.escalation_policy import POLICY_VERSION
+
 logger = logging.getLogger(__name__)
 
 _AUTO_INIT = object()
@@ -63,6 +65,10 @@ class EvaluationReport:
     """Aggregate evaluation report."""
 
     timestamp: str = ""
+    # "" on a report produced before this field existed (e.g. a report
+    # re-serialized from an old JSON/CSV) -- never conflate that with a v2
+    # run. evaluate_batch() always stamps the current POLICY_VERSION.
+    policy_version: str = ""
     total_samples: int = 0
     # Aggregate RAGAS scores
     avg_faithfulness: float = 0.0
@@ -382,6 +388,7 @@ class RagasEvaluator:
         """
         report = EvaluationReport(
             timestamp=datetime.now(timezone.utc).isoformat(),
+            policy_version=POLICY_VERSION,
             total_samples=len(samples),
         )
 
@@ -449,6 +456,7 @@ def format_report_markdown(report: EvaluationReport) -> str:
         "# RAGAS Evaluation Report",
         "",
         f"**Date:** {report.timestamp}",
+        f"**Policy Version:** {report.policy_version or 'unversioned (pre-v2)'}",
         f"**Samples:** {report.total_samples}",
         "",
         "## Aggregate Scores",
@@ -488,6 +496,7 @@ def format_report_json(report: EvaluationReport) -> str:
     """Format the evaluation report as JSON."""
     data = {
         "timestamp": report.timestamp,
+        "policy_version": report.policy_version,
         "total_samples": report.total_samples,
         "aggregate_scores": {
             "faithfulness": report.avg_faithfulness,
@@ -537,6 +546,7 @@ def format_report_csv(report: EvaluationReport) -> str:
             "context_recall",
             "hint_level_compliance",
             "no_solution_leakage",
+            "policy_version",
         ]
     )
 
@@ -553,6 +563,7 @@ def format_report_csv(report: EvaluationReport) -> str:
                 _fmt_csv(r.context_recall),
                 _fmt_csv(r.hint_level_compliance),
                 _fmt_csv(r.no_solution_leakage),
+                report.policy_version,
             ]
         )
 
@@ -569,6 +580,7 @@ def format_report_csv(report: EvaluationReport) -> str:
             _fmt_csv(report.avg_context_recall),
             _fmt_csv(report.avg_hint_level_compliance),
             _fmt_csv(report.avg_no_solution_leakage),
+            report.policy_version,
         ]
     )
 
