@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend import metrics
+from backend.agents.escalation_policy import EscalationSignals
 from backend.agents.supervisor import diagnose_and_hint
 from backend.api.auth import require_service_key
 from backend.llm_executor import run_llm_call
@@ -51,6 +52,7 @@ from backend.api.v1_schemas import (
 )
 from backend.db.database import async_session_factory, get_db
 from backend.db.models import InteractionHistory, Problem, StudentProgress, User
+from backend.db.queries import get_attempt_history, get_topic_mastery, seconds_since_last_attempt
 from backend.memory.mastery import update_mastery
 from backend.memory.redis_session import get_session_manager
 from backend.tools.test_runner import run_sql_tests
@@ -348,6 +350,26 @@ async def hint_v1(body: HintRequestV1) -> HintResponseV1:
         if problem is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Problem no longer exists.")
 
+        # Escalation signals (see docs/hint-escalation-policy-v2.md) — this
+        # interaction's own row already exists at this point (/grade wrote
+        # it before /hint runs), so it must be excluded from its own history.
+        history = await get_attempt_history(
+            session, interaction.user_id, interaction.problem_id,
+            exclude_interaction_id=interaction.id,
+        )
+        topic_mastery = await get_topic_mastery(session, interaction.user_id, interaction.problem_id)
+        signals = EscalationSignals(
+            attempt_count=interaction.attempt_number,
+            error_type_history=tuple(h["error_type"] for h in history),
+            query_history=tuple(h["submitted_code"] for h in history),
+            hint_level_history=tuple(
+                h["hint_level"] for h in history if h["hint_level"] is not None
+            ),
+            seconds_since_prev=seconds_since_last_attempt(history),
+            topic_mastery=topic_mastery.value if topic_mastery else None,
+            starter_code=problem.starter_code,
+        )
+
         # Copy everything diagnose_and_hint needs into plain locals — the
         # session (and these ORM objects) are gone once this block exits.
         submitted_code = interaction.submitted_code
@@ -368,6 +390,7 @@ async def hint_v1(body: HintRequestV1) -> HintResponseV1:
         gold_standard_query=gold_query,
         schema_info=None,
         past_struggles="",
+        signals=signals,
     )
 
     latency_ms = int((time.perf_counter() - start) * 1000)

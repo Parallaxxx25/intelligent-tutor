@@ -43,6 +43,7 @@ def generate_hint(state: dict[str, Any]) -> dict[str, Any]:
         attempt_count=state.get("attempt_count", 1),
         problem_description=state.get("problem_description", ""),
         problematic_clause=state.get("diagnosis_problematic_clause"),
+        hint_level=state.get("recommended_hint_level"),
     )
 
     logger.info(

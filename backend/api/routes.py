@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.agents.escalation_policy import EscalationSignals
 from backend.agents.supervisor import (
     run_pipeline_langgraph,
     run_pipeline_deterministic,
@@ -41,6 +42,7 @@ from backend.db.models import (
     TestCase,
     User,
 )
+from backend.db.queries import get_attempt_history, get_topic_mastery, seconds_since_last_attempt
 from backend.db.schemas import (
     CodeSubmission,
     ComponentHealth,
@@ -276,6 +278,24 @@ async def submit_code(
         for tc in problem.test_cases
     ]
 
+    # --- Build escalation signals (see docs/hint-escalation-policy-v2.md) ---
+    # error_type/current_query for *this* attempt aren't known yet (the
+    # classifier hasn't run) — the pipeline fills those in from its own
+    # classification via dataclasses.replace before deciding the level.
+    history = await get_attempt_history(db, body.user_id, body.problem_id)
+    topic_mastery = await get_topic_mastery(db, body.user_id, body.problem_id)
+    signals = EscalationSignals(
+        attempt_count=attempt_count,
+        error_type_history=tuple(h["error_type"] for h in history),
+        query_history=tuple(h["submitted_code"] for h in history),
+        hint_level_history=tuple(
+            h["hint_level"] for h in history if h["hint_level"] is not None
+        ),
+        seconds_since_prev=seconds_since_last_attempt(history),
+        topic_mastery=topic_mastery.value if topic_mastery else None,
+        starter_code=problem.starter_code,
+    )
+
     # --- Resolve pipeline mode -----------------------------------------
     settings = get_settings()
     effective_mode = mode or PipelineMode(settings.DEFAULT_PIPELINE_MODE)
@@ -310,6 +330,7 @@ async def submit_code(
             gold_standard_query=gold_standard,
             schema_info=None,  # TODO: extract from problem metadata
             past_struggles=await _recent_struggles(db, body.user_id),
+            signals=signals,
         )
     elif effective_mode == PipelineMode.LANGGRAPH:
         pipeline_result = await run_in_threadpool(
@@ -319,6 +340,7 @@ async def submit_code(
             problem_topic=problem.topic,
             test_cases=test_cases_for_runner,
             attempt_count=attempt_count,
+            signals=signals,
         )
     else:
         pipeline_result = await run_in_threadpool(
@@ -328,6 +350,7 @@ async def submit_code(
             problem_topic=problem.topic,
             test_cases=test_cases_for_runner,
             attempt_count=attempt_count,
+            signals=signals,
         )
 
     _pipeline_elapsed = time.perf_counter() - _pipeline_start

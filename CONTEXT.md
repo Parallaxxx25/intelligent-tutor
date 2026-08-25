@@ -50,10 +50,26 @@ decide the Verdict. See
 **Attempt** — the count of a student's submissions to one Problem, tracked
 in `student_progress.attempts` (Postgres, authoritative) and mirrored
 best-effort in the student's Redis session. **Hint Level** — the 1–4
-pedagogical scaffold tier (1 Attention → 4 Solution Template), chosen from
-the Attempt count. In the LLM pipeline, Gemini's suggested level is clamped
-to `min(gemini_level, attempt_derived_level)` — it can never hand out a
-higher level than the student has earned by attempting.
+pedagogical scaffold tier (1 Attention → 4 Solution Template), chosen by
+the Escalation Policy. Superseded: this used to be a pure function of the
+Attempt count (attempt 1→L1, 2→L2, 3→L3, 4+→L4); that rule now survives
+only as the Escalation Policy's fallback when no richer signal is
+available — see
+[0005-multi-signal-hint-escalation](docs/adr/0005-multi-signal-hint-escalation.md).
+
+## Escalation Policy
+
+The pure, deterministic function (`backend/agents/escalation_policy.py::
+decide_hint_level`) that turns this attempt's signals — attempt count,
+error-type stability across recent attempts, whether the resubmitted query
+changed, dwell time since the last submission, and topic mastery on
+sibling Problems sharing the same `Problem.topic` — into an **Escalation
+Decision**: the Hint Level plus a list of **Drivers** (short machine-
+readable tags like `error_type_stable_2x` or `query_unchanged_fast_hold`)
+explaining why. The Escalation Policy is authoritative over Gemini's own
+proposed level in the LLM pipeline; Gemini's proposal is recorded
+alongside the decision, never used to raise or lower it. Never itself
+calls an LLM — reproducible and independently unit-testable by design.
 
 ## Diagnosis
 
