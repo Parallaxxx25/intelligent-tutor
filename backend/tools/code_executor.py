@@ -112,6 +112,13 @@ def execute_sql(
     The query runs inside a **read-only transaction** that is always
     rolled back (no side-effects).
 
+    Students here were taught MySQL syntax; this grader runs on Postgres.
+    On a `syntax_error`, retry once with a `sqlglot`-transpiled MySQL→Postgres
+    rewrite of the *same* query — never a blind transpile of every query,
+    which would grade text the student didn't write (see
+    docs/adr/0003-mysql-diagnosed-not-graded.md). If the retry also fails,
+    the *original* error is returned, not the transpiled query's.
+
     Returns:
         {
             "success": bool,
@@ -121,13 +128,35 @@ def execute_sql(
             "execution_time_ms": int,
             "error_type": str | None,
             "error_message": str | None,
+            "dialect_normalized": bool,
         }
     """
-    import time
-
     settings = get_settings()
     timeout = timeout or settings.CODE_EXEC_TIMEOUT
     db_url = database_url or settings.POSTGRES_URL_EXEC or settings.POSTGRES_URL_SYNC
+
+    result = _execute_validated(query, db_url, timeout)
+    if result["success"] or result["error_type"] != "syntax_error":
+        return result
+
+    transpiled = _try_transpile_mysql(query)
+    if transpiled is None:
+        return result
+
+    retried = _execute_validated(transpiled, db_url, timeout)
+    if not retried["success"]:
+        return result  # original error, not the transpiled query's
+
+    retried["dialect_normalized"] = True
+    return retried
+
+
+def _execute_validated(query: str, db_url: str, timeout: int) -> dict[str, Any]:
+    """Validate against the SELECT/WITH/EXPLAIN allowlist and the dangerous-
+    keyword blocklist, then execute. This is the actual security boundary —
+    every caller of execute_sql, including the dialect retry, goes through
+    it, so a transpiled rewrite can't bypass the same checks."""
+    import time
 
     # --- Safety check: only SELECT / WITH / EXPLAIN -----------------------
     match = _ALLOWED_STATEMENTS.match(query.strip())
@@ -193,6 +222,7 @@ def execute_sql(
                 "execution_time_ms": elapsed_ms,
                 "error_type": None,
                 "error_message": None,
+                "dialect_normalized": False,
             }
 
         finally:
@@ -203,6 +233,21 @@ def execute_sql(
         error_str = str(exc).strip()
         error_type = _classify_sql_exception(error_str)
         return _error_result(error_type, error_str)
+
+
+def _try_transpile_mysql(query: str) -> str | None:
+    """Return a Postgres rewrite of *query* if it parses as valid MySQL,
+    else None. Mirrors backend/dialect.py::diagnose_dialect's parse check
+    but returns the rewritten SQL text instead of a hint string."""
+    import sqlglot
+
+    try:
+        statements = sqlglot.transpile(query, read="mysql", write="postgres")
+    except Exception:
+        return None
+    if not statements:
+        return None
+    return statements[0]
 
 
 def _bound_query(query: str) -> str:
@@ -228,6 +273,7 @@ def _error_result(error_type: str, message: str) -> dict[str, Any]:
         "execution_time_ms": 0,
         "error_type": error_type,
         "error_message": message,
+        "dialect_normalized": False,
     }
 
 

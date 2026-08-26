@@ -106,6 +106,13 @@ class Problem(Base):
     )
     topic: Mapped[str] = mapped_column(String(128), nullable=False, default="general")
     starter_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # This problem's id in the integrating platform's own catalog (81 items,
+    # vs. our 24-then-81 seeded set) — set only for problems imported via
+    # scripts/import_partner_problems.py. NULL means this problem isn't in
+    # their catalog and /api/v1/grade will never be called for it.
+    external_problem_id: Mapped[Optional[int]] = mapped_column(
+        Integer, unique=True, nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -280,6 +287,14 @@ class InteractionHistory(Base):
     # thesis data when the two graders could disagree.
     verdict_source: Mapped[str] = mapped_column(
         String(32), nullable=False, default="primary"
+    )
+    # The integrating platform's own SQLite-grader verdict for this same
+    # submission, when supplied (see docs/adr/0006-partner-primary-dual-grade.md).
+    # Used only to decide whether a hint_token is worth minting when our
+    # Postgres verdict disagrees with theirs — never overwrites our own
+    # grading_passed/grading_score.
+    partner_verdict: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
     )
 
     # Relationships

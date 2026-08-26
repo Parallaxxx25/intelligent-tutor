@@ -31,6 +31,11 @@ _pg_exec_seconds: dict[tuple[str, str], list[float]] = defaultdict(list)
 _llm_semaphore_in_flight = 0
 _llm_semaphore_limit = 0
 _request_errors: Counter[str] = Counter()
+# Keyed by problem_id — how often our Postgres verdict and the integrating
+# platform's own SQLite verdict disagree on the same submission (see
+# docs/adr/0006-partner-primary-dual-grade.md). A live measurement of
+# MySQL/Postgres dialect divergence, not just the pre-lab gold_audit estimate.
+_grader_disagreement_total: Counter[int] = Counter()
 
 # Cap per-series sample retention so a long-running process doesn't grow
 # these lists unboundedly — a lab session's total request volume (a few
@@ -74,6 +79,11 @@ def record_pg_exec(seconds: float, kind: str, cache: str) -> None:
 def record_request_error(endpoint: str) -> None:
     with _lock:
         _request_errors[endpoint] += 1
+
+
+def record_grader_disagreement(problem_id: int) -> None:
+    with _lock:
+        _grader_disagreement_total[problem_id] += 1
 
 
 def set_llm_semaphore(in_flight: int, limit: int) -> None:
@@ -129,4 +139,5 @@ def snapshot() -> dict[str, Any]:
             "llm_semaphore_in_flight": _llm_semaphore_in_flight,
             "llm_semaphore_limit": _llm_semaphore_limit,
             "request_errors": dict(_request_errors),
+            "grader_disagreement_total": dict(_grader_disagreement_total),
         }

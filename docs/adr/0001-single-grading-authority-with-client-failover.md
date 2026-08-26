@@ -1,5 +1,10 @@
 # Single grading authority, 24-problem catalog, client-side failover
 
+> **Superseded by [0006-partner-primary-dual-grade](0006-partner-primary-dual-grade.md).** Written
+> against a hypothetical integration; once we integrated against the real partner platform, its
+> SQLite grader turned out to already be primary in production (not a failover path) and its
+> catalog is 81 problems, not 24. Kept here for the record — see 0006 for what actually shipped.
+
 This system is one of two graders for an integrating platform (which ships
 its own SQLite-based execution). We decided **this system's Postgres is the
 sole grading authority** — the integrator's SQLite never grades a

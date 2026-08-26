@@ -5,12 +5,17 @@ pass (see `docs/adr/` for the decisions these terms sit inside).
 
 ## Problem
 
-One of the **24** seeded exercises (12 Practice + 12 Assignment, from
-`sql-problem/Practice-Assignment-Bike shop-2025.csv`). A Problem's `id` in
-this system's Postgres is the identifier shared with any integrating
-platform — an integrator imports these 24 and stores this id as its own
-foreign key (`tutor_problem_id`), rather than maintaining separate problem
-text that could drift from the Gold Query it's graded against.
+A seeded exercise, either one of the original **24** (12 Practice + 12
+Assignment, from `sql-problem/Practice-Assignment-Bike shop-2025.csv`) or
+one of the partner platform's **81**, imported via
+`scripts/import_partner_problems.py` and tagged with `external_problem_id`
+(see [0006-partner-primary-dual-grade](docs/adr/0006-partner-primary-dual-grade.md)).
+Only problems with a non-null `external_problem_id` are visible to
+`GET /api/v1/problems` — the 24 CSV-sourced problems stay in the table for
+existing eval artifacts but carry no partner mapping. A Problem's `id` in
+this system's Postgres is the identifier an integrating platform imports
+and stores as its own foreign key (`tutor_problem_id`), matched on
+`external_problem_id` rather than title text.
 
 ## Gold Query
 
@@ -28,6 +33,14 @@ The outcome of grading a submission against a Problem's Gold Query: **pass**,
 overflows it — never silently compared as if it were smaller than it is).
 Today's catalog has exactly one test case per Problem, so `score` is always
 either `0.0` or `1.0` — there is no partial credit.
+
+For a partner-integrated Problem there are *two* verdicts per submission:
+ours (Postgres, computed in `POST /api/v1/grade`) and the partner's own
+(their SQLite grader, passed to us as `partner_verdict`). **The partner's
+verdict is the one the student sees** — ours exists to mint a `hint_token`
+and feed diagnosis, and disagrees with theirs mostly on MySQL/Postgres
+dialect. See
+[0006-partner-primary-dual-grade](docs/adr/0006-partner-primary-dual-grade.md).
 
 ## Label Mismatch
 
