@@ -33,9 +33,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY backend/ ./backend/
 COPY scripts/ ./scripts/
-COPY slide-material/ ./slide-material/
 COPY SQL-Server-Sample-Database/ ./SQL-Server-Sample-Database/
 COPY sql-problem/ ./sql-problem/
+
+# slide-material/ is .gitignored (course PDFs, not meant for git history) —
+# absent from every fresh clone, so it can't be COPYed unconditionally
+# without breaking the build for everyone. Create it empty; SLIDE_MATERIAL_DIR
+# still resolves to a valid (empty) path. To actually enable slide RAG, bind-
+# mount the real directory at runtime: `-v ./slide-material:/app/slide-material`
+# (or the compose equivalent) alongside SLIDE_RAG_ENABLED=true.
+RUN mkdir -p slide-material
 
 RUN chown -R appuser:appuser /app
 USER appuser
