@@ -108,10 +108,6 @@ class EscalationSignals:
     # callers always pass the actual submitted code, never None.
     current_query: str | None = None
     starter_code: str | None = None
-    # Present for ablation only (§4.6): production never reads this field.
-    # The LLM pipeline still records its own severity/level proposal in the
-    # trace (see supervisor.py's llm_proposed_level), just not as an input here.
-    severity: str | None = None
 
 
 @dataclass(frozen=True)
