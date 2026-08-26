@@ -1,0 +1,19 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.chroma/
+tests/
+frontend/
+docs/
+# Root-anchored (leading /) so these don't shadow sql-problem/*.csv, which
+# seed.py needs inside the image — only the report artifacts at repo root
+# are excluded here.
+/*.csv
+/*.png
+/*.md
+.env
+.env.example
+docker-compose.yml

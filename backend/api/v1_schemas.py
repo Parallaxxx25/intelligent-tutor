@@ -38,6 +38,14 @@ class GradeRequestV1(BaseModel):
         description="Caller-generated idempotency key — a retry with the same "
         "id returns the original result instead of re-grading or double-counting.",
     )
+    partner_verdict: Optional[Literal["pass", "fail", "ungradable"]] = Field(
+        None,
+        description="The calling platform's own grading verdict for this same "
+        "submission, if it grades independently (see "
+        "docs/adr/0006-partner-primary-dual-grade.md). Used only to decide "
+        "whether a hint_token is minted when the two graders disagree — never "
+        "overrides our own verdict or score.",
+    )
 
 
 class StudentResultV1(BaseModel):
@@ -83,6 +91,12 @@ class ProblemV1(BaseModel):
     its own problem rows (tutor_problem_id)."""
 
     id: int
+    external_problem_id: Optional[int] = Field(
+        None,
+        description="This problem's id in the caller's own catalog, when "
+        "imported via scripts/import_partner_problems.py — match on this "
+        "instead of title text to build your tutor_problem_id mapping.",
+    )
     title: str
     description: str
     topic: str
