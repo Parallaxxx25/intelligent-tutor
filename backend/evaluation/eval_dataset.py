@@ -53,6 +53,10 @@ class EvalSample:
     prev_hint_level: int | None = None
     seconds_since_prev: float | None = None
     topic_mastery: str | None = None
+    # slide-RAG retrieval gold labels — ";"-separated "lab:page" refs
+    # (e.g. ("6:21", "6:22")), matched against search_slides()'s new
+    # id/lab_no/page fields. Empty for samples with no slide RAG assertion.
+    gold_slides: tuple[str, ...] = field(default_factory=tuple)
 
 
 def signals_from(sample: EvalSample) -> EscalationSignals:
@@ -514,5 +518,8 @@ def load_eval_dataset_from_csv(csv_path: str) -> list[EvalSample]:
                     float(row["seconds_since_prev"]) if row.get("seconds_since_prev") else None
                 ),
                 topic_mastery=row.get("topic_mastery") or None,
+                gold_slides=tuple(
+                    v.strip() for v in row.get("gold_slides", "").split(";") if v.strip()
+                ),
             ))
     return dataset

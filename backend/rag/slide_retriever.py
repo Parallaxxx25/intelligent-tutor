@@ -260,6 +260,12 @@ def search_slides(
         meta = d["metadata"]
         out.append(
             {
+                # id/lab_no/page let a caller identify *which* chunk came back —
+                # needed by the retrieval evaluation (Recall@k against gold
+                # `lab:page` labels); supervisor.py reads only title/content.
+                "id": doc_id,
+                "lab_no": meta.get("lab_no", 0),
+                "page": meta.get("page", 0),
                 "topic": meta.get("topic", ""),
                 "title": meta.get("citation", doc_id),
                 "content": d["parent"],
