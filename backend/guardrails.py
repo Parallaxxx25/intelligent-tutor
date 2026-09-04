@@ -221,7 +221,6 @@ def validate_output(
         GuardrailResult with pass/fail, violations, and optionally sanitized content.
     """
     result = GuardrailResult()
-    result.sanitized_content = llm_response
     settings = get_settings()
 
     # 1. Solution leakage prevention

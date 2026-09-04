@@ -241,6 +241,35 @@ class TestOutputGuardrails:
         assert result.sanitized_content is not None
         assert "redacted" in result.sanitized_content.lower()
 
+    def test_unsanitizable_violation_offers_no_sanitized_content(self):
+        """
+        HR-schema leakage has no sanitizer — there is no way to "clean" a hint
+        that teaches the wrong schema, so the caller must be left with nothing
+        to serve and fall back to a rule-based hint instead.
+
+        Regression: validate_output used to seed sanitized_content with a
+        verbatim copy of the raw response before running any check, so it was
+        always truthy. supervisor.py reads it as "the violation was repaired"
+        and served the leaking text back unchanged, making its own rule-based
+        fallback branch unreachable. Measured at 27/360 leaking hints served
+        in the slide-RAG ablation (see TESTING_RAG.md §5).
+        """
+        result = validate_output(
+            llm_response="Look at how employees join to departments on department_id.",
+            gold_standard_query="",
+        )
+        assert not result.passed
+        assert result.sanitized_content is None
+
+    def test_clean_response_offers_no_sanitized_content(self):
+        """Nothing was cleaned, so there is nothing to hand back."""
+        result = validate_output(
+            llm_response="Check your FROM clause — is the table name spelled correctly?",
+            gold_standard_query="",
+        )
+        assert result.passed
+        assert result.sanitized_content is None
+
 
 # ===================================================================
 # Helper Function Tests
