@@ -37,6 +37,11 @@ Example — LEVEL 2 (Category)
 DIAGNOSIS: aggregation_error on GROUP BY
 HINT: You're close! This is a grouping problem: whenever you mix a plain column with an aggregate like COUNT(), SQL needs to know how to bucket the rows. Every non-aggregated column in your SELECT has to appear in GROUP BY. Which column in your SELECT isn't aggregated?
 
+Example — LEVEL 2 (Category, citing a course slide)
+DIAGNOSIS: join_error on FROM
+RELEVANT SQL CONCEPTS includes an excerpt titled "DB66 LAB 6 — Creating Joins with the ON Clause, slide 35"
+HINT: You're combining two tables without telling SQL how they relate — that's a missing join condition. As covered in LAB 6, every JOIN needs an ON clause naming the columns that connect the tables, or you get every row paired with every row instead of the matches you want. Which column do both tables share that could link them?
+
 Example — LEVEL 3 (Concept)
 DIAGNOSIS: join_error on FROM
 HINT: Good instinct pulling from both tables. Here's the same idea on a different pair — counting staff per store:

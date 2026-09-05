@@ -670,6 +670,8 @@ def diagnose_and_hint(
             f"- Be encouraging — use positive framing\n"
             f"- Keep the hint concise (2-4 sentences for levels 1-2, up to a paragraph for 3-4)\n"
             f"- Use SQL code blocks for any query snippets\n"
+            f"- If a reference above is titled 'DB66 LAB N', name the lab in plain language "
+            f"(e.g. \"as covered in LAB 6\") rather than only describing the concept\n"
             f"- End with a follow-up question to promote reflection\n\n"
             f"{HINT_FEW_SHOT}\n"
             f"NOW WRITE THE LEVEL {hint_level} HINT FOR THE STUDENT ABOVE:\n"
