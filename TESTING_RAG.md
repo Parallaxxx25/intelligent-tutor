@@ -300,40 +300,56 @@ python -m backend.evaluation.run_slide_ablation --score-human human_rating_sheet
 Sanity gate between studies: `hybrid` Recall@5 must beat both single-mode arms. If it does not, the
 gold labels are wrong or the query template has drifted — fix that before spending judge tokens.
 
-## 8. Known limitation — citations are rare but accurate
+## 8. Citation rate — measured, diagnosed, and fixed
 
-Slide RAG produces a lab citation in **10.8% of hints** [CI 5.0%, 17.5%], against exactly 0% in
-both arms without slide context. The effect is real — the CI excludes zero — but small. Of the
-gold-labeled `curated_slides` runs, 10.2% cite the *correct* lab, meaning nearly every citation
-that does appear is the right one. The retriever is not citing badly; it is citing rarely.
+Slide RAG produced a lab citation in **10.8% of hints** [CI 5.0%, 17.5%] in the Study 2 run above,
+against exactly 0% in both arms without slide context. The effect was real — the CI excluded zero
+— but small. Of the gold-labeled `curated_slides` runs, 10.2% cited the *correct* lab, meaning
+nearly every citation that did appear was the right one. The retriever was not citing badly; it was
+citing rarely.
 
 > An earlier 3-sample smoke test showed 0% and was misread as "citations never happen". At n=3 the
 > expected count was under one hint. The full run corrected it — recorded here because it is a
 > worked example of why the smoke test is a plumbing check, never a measurement.
 
-The rarity is a **prompt-instruction gap, not a retrieval failure**.
+The rarity was a **prompt-instruction gap, not a retrieval failure**.
 
 `supervisor.py` appends a note to the RAG context telling the model to "cite the slide", but that
 note's actual job is the dialect warning, and the hint prompt's `RULES:` block — which is what the
-model follows — never asks for a citation. Neither do the `HINT_FEW_SHOT` examples, so nothing
-demonstrates the format either. Gemini therefore paraphrases the slide content without ever writing
-"LAB 6", and the citation detector correctly finds nothing.
+model follows — never asked for a citation. Neither did the `HINT_FEW_SHOT` examples, so nothing
+demonstrated the format either. Gemini therefore paraphrased the slide content without ever writing
+"LAB 6", and the citation detector correctly found nothing.
 
-Verified directly on `join_02` (gold `6:36`): slide context was retrieved and the hint is
-pedagogically correct, but names no lab.
+Verified directly on `join_02` (gold `6:36`): slide context was retrieved and the hint was
+pedagogically correct, but named no lab.
 
-**The fix, if pursued:** add citation to the `RULES:` block in `diagnose_and_hint`'s `hint_prompt`
-— e.g. `- If a reference comes from the course slides, name the lab (e.g. "as covered in LAB 6")` —
-and add one `HINT_FEW_SHOT` example showing the format, since the few-shot examples are what the
-model actually imitates. It is a one-line prompt change, but it alters a live, user-facing prompt
-and so belongs in its own change with its own regression pass, not folded into an evaluation
-harness.
+### Fix applied
 
-Reported here as a finding rather than fixed. The "see LAB 6, slide 21" benefit claimed in
-SLIDE_RAG.md's motivation reaches the student in roughly **one hint in nine**; the rest of the time
-the slide informs the model and is invisible in the output. Given that Study 2 found no measurable
-quality gain, provenance is the layer's main demonstrated value — which makes raising this 10.8%
-the highest-leverage follow-up in the whole system.
+One `RULES:` line in `diagnose_and_hint`'s `hint_prompt`
+(`- If a reference above is titled 'DB66 LAB N', name the lab in plain language ... rather than
+only describing the concept`) plus one new `HINT_FEW_SHOT` example demonstrating the phrasing
+("As covered in LAB 6, ...") — the few-shot examples are what the model imitates most reliably, so
+the rule alone would have been inconsistent.
+
+Re-running `join_02` after the fix:
+
+> "Remember, as covered in LAB 7, the `ON` condition specifies the columns that link the two
+> tables. You need to find the column that actually connects `products` to `brands`."
+
+The citation mechanism now fires — but it names **LAB 7**, not the gold **LAB 6**. Checked directly
+against `search_slides()` for this query: retrieval itself ranked LAB 7 above LAB 6. The model is
+citing faithfully; the wrong lab number here is a retrieval miss (§3's `join_02`-class near-duplicate
+problem), not a fabricated or mismatched citation. The prompt fix does exactly what it was meant to
+do — surface whatever the retriever hands it — and citation accuracy is now bounded by Study 1's
+retrieval quality, not by prompt wording.
+
+Because this changes a live, user-facing prompt, it landed as its own commit with its own
+regression pass (72/72 tests in `test_llm_pipeline.py`, `test_guardrails.py`, `test_slide_rag.py`)
+rather than inside the evaluation harness. **Studies 1–3 above describe the system before this
+fix** — the 10.8%/10.2% figures are the pre-fix baseline this change was built to raise. A
+follow-up ablation run would show whether it moved `judge_quality` (unlikely, per Study 2) and by
+how much it moved `citation_rate` (expected to rise materially, bounded above by Study 1's
+LabRecall@5 of 0.889).
 
 ## 9. What was built
 
@@ -369,5 +385,5 @@ benefit.
 | 2 | Exact-page recall is low (0.167) while deck-level recall is high (0.889) — near-duplicate slides | Reported as measurement artifact |
 | 3 | Slide RAG has **no measurable effect on hint quality** (Δ +0.003, CI spans zero) | Null result, reportable |
 | 4 | Slide RAG raises citation rate 0% → 10.8% (CI excludes zero) | Only demonstrated benefit |
-| 5 | **27/360 served hints leak HR-schema names; output guardrail defeated by `guardrails.py:224`** | **Open production bug** |
-| 6 | Citations are rare because no prompt rule or few-shot example asks for them | Open, fix proposed §8 |
+| 5 | 27/360 served hints leak HR-schema names; output guardrail defeated by `guardrails.py:224` | **Fixed**, own commit + regression tests |
+| 6 | Citations were rare (10.8%) because no prompt rule or few-shot example asked for them | **Fixed**, own commit; remaining accuracy bounded by Study 1 retrieval |
