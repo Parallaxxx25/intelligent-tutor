@@ -254,6 +254,54 @@ class TestLLMPipelineFallback:
         # Should have a rule-based hint (not empty)
         assert len(result.hint.hint_text) > 0
 
+    @patch("backend.rag.retriever.retrieve_relevant_context")
+    @patch("backend.llm.generate_structured_response")
+    @patch("backend.llm.generate_response")
+    @patch("backend.agents.supervisor.run_sql_tests")
+    def test_hint_prompt_forbids_hr_schema_examples(
+        self,
+        mock_tests,
+        mock_gen,
+        mock_structured,
+        mock_rag,
+        sample_submission,
+        sample_test_cases,
+        mock_grading_failed,
+    ):
+        """
+        Regression: the primary hint prompt had no instruction to use the
+        student's actual schema for invented examples, so Gemini reached
+        for a generic textbook "employees" table on its own -- confirmed by
+        leaks appearing even with slide RAG and the curated KB both off
+        (TESTING_RAG.md section 8). Assert the instruction survives future
+        edits to diagnose_and_hint's hint_prompt.
+        """
+        from backend.agents.supervisor import run_pipeline_llm
+
+        mock_tests.return_value = mock_grading_failed
+        mock_rag.return_value = []
+        mock_structured.return_value = {
+            "error_type": "aggregation_error",
+            "error_message": "must appear in GROUP BY",
+            "problematic_clause": "GROUP BY",
+            "severity": "medium",
+            "recommended_hint_level": 3,
+            "pedagogical_rationale": "Third attempt on a conceptual gap.",
+        }
+        mock_gen.return_value = "Here's a similar example using staffs and stores."
+
+        run_pipeline_llm(
+            submission=sample_submission,
+            problem_description="Count staff per store",
+            problem_topic="GROUP BY",
+            test_cases=sample_test_cases,
+            attempt_count=3,
+        )
+
+        hint_prompt = mock_gen.call_args.kwargs["prompt"]
+        assert "bikestores" in hint_prompt.lower()
+        assert "employees" in hint_prompt.lower()  # named as the thing to avoid
+
 
 class TestLLMPipelineOutputGuardrails:
     """Test that output guardrails sanitize LLM responses."""

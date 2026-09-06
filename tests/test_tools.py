@@ -438,3 +438,58 @@ class TestSQLHintGenerator:
         assert result["hint_level"] == 4
         assert result["hint_type"] == "code_template"
         assert "___" in result["hint_text"]
+
+    def test_rulebased_fallback_never_leaks_hr_schema(self) -> None:
+        """
+        Regression: the static Level-3 examples used to hardcode a generic
+        textbook schema (employees/department), which happens to be exactly
+        the Oracle HR-schema terms guardrails.py rejects. When the output
+        guardrail routed a leaking LLM hint to this "safe" fallback, the
+        fallback's own template leaked the same term back -- 17/360 hints
+        in the slide-RAG ablation (see TESTING_RAG.md section 8). Every
+        static example must use the student's actual BikeStores schema.
+        """
+        from backend.db.models import ErrorType
+        from backend.guardrails import _HR_SCHEMA_LEAK_PATTERN
+        from backend.tools.hint_generator import _generate_hint_rulebased
+
+        for error_type in ErrorType:
+            if error_type.value == "no_error":
+                continue
+            for level in (1, 2, 3, 4):
+                result = _generate_hint_rulebased(
+                    error_type=error_type.value,
+                    error_message="some error",
+                    student_query="SELECT 1",
+                    hint_level=level,
+                    problem_description="",
+                    problematic_clause=None,
+                )
+                leak = _HR_SCHEMA_LEAK_PATTERN.search(result["hint_text"])
+                assert leak is None, (
+                    f"{error_type.value} level {level} leaks '{leak.group(1)}': "
+                    f"{result['hint_text']!r}"
+                )
+
+    def test_llm_hint_prompt_forbids_hr_schema_examples(self) -> None:
+        """
+        The rule-based fallback's *primary* path is actually another Gemini
+        call (_generate_hint_with_llm), not the static templates -- it only
+        falls further to _generate_hint_rulebased if that call raises. That
+        second LLM call had no schema constraint of its own, so it invented
+        generic "employees" examples independently of slide RAG (confirmed:
+        leaks appeared even with slide RAG and the curated KB both off).
+        Assert the instruction survives future prompt edits.
+        """
+        from backend.tools.hint_generator import _build_hint_prompt
+
+        prompt = _build_hint_prompt(
+            error_type="aggregation_error",
+            error_message="aggregate functions are not allowed in WHERE",
+            student_query="SELECT dept, AVG(salary) FROM staffs WHERE AVG(salary) > 500",
+            hint_level=3,
+            problem_description="",
+            problematic_clause="WHERE",
+        )
+        assert "bikestores" in prompt.lower()
+        assert "employees" in prompt.lower()  # named as the thing to avoid
