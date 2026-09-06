@@ -252,13 +252,62 @@ sanitizer — HR-schema leakage and profanity — are served to the student verb
 `result.sanitized_content or llm_response`, so they are unaffected, while `sanitized_content` stays
 `None` when nothing was actually cleaned, making the fallback branch reachable again.
 
-Not applied here: it is a live safety path, and it changes served output (hints that leak would
-become rule-based fallbacks), so it belongs in its own change with its own regression pass. It also
-predates this work — the evaluation harness surfaced it, which is what an evaluation is for.
+Fixed in `c73d366`, with regression tests. Verified: an HR-leaking hint now returns
+`sanitized_content=None` and reaches the fallback branch instead of being served.
 
-**Note on the metric.** `guardrail_fallback` measures *fallbacks*, not *violations*, so it is blind
-to the sanitize path by construction. After the fix it becomes meaningful; until then the raw
-pattern cross-check is the only trustworthy safety signal here.
+### Re-measurement — bug 1's fix exposed bug 2
+
+Re-running the full 360-hint ablation after the fix: `guardrail_fallback` rose from 0.0% to
+9–10% (confirming the branch is reachable now), but the raw-leak cross-check read **17 of 360**,
+not 0.
+
+Inspecting the actual served text for all 17 ruled out the obvious explanation immediately: the
+text was free-form, query-specific prose ("You're doing great identifying the need to filter based
+on an aggregate!..."), not the fixed strings a template would produce. So the leak was not the
+static rule-based templates.
+
+**Root cause 2** — `generate_sql_hint()`, which `supervisor.py` calls its "rule-based fallback",
+is not rule-based on its primary path. It tries a *second*, independent Gemini call first
+(`_generate_hint_with_llm`) with its own prompt, and only drops to the truly-static
+`_generate_hint_rulebased` templates if that second call raises an exception. That second prompt
+had no schema constraint at all, so Gemini invented a generic textbook `employees`/`department`
+example on its own — independent of slide RAG, which is why leaks appeared in the `no_rag` arm
+even before bug 1's fix (5 of the original 27). The primary hint prompt in `supervisor.py` had the
+same gap: it only warns against naming HR-schema tables when *citing a retrieved slide*, with no
+general rule to use the student's own schema for a self-invented comparison example.
+
+So the "safety net" the guardrail fix made reachable was itself another unguarded LLM call — fixing
+bug 1 didn't create bug 2, it just stopped bug 1 from hiding it.
+
+**Fix, three parts** (`25e38aa`):
+- One `RULES:` line in both `hint_generator.py`'s `_build_hint_prompt` and `supervisor.py`'s
+  `hint_prompt`: any invented comparison example must use BikeStores tables (`customers`, `orders`,
+  `order_items`, `products`, `staffs`, `stores`), never a generic textbook schema.
+- The four static `_generate_hint_rulebased` templates that hardcoded `employees`/`department`
+  renamed to BikeStores tables — defense in depth for the path that only runs when both Gemini
+  calls fail.
+- Two regression tests: one sweeps every `ErrorType` × level through the static templates and
+  asserts none match `_HR_SCHEMA_LEAK_PATTERN`; one asserts the schema-scoping instruction is
+  present in both built prompt strings, so a future edit can't silently drop it.
+
+Verified live: re-ran the exact `aggregation_error`/`HAVING` query that had produced an
+`employees`/`department` example through `generate_sql_hint()` directly. It now invents a
+`sales.order_items`/`store_id` example, no leak.
+
+**Note on the metric.** `guardrail_fallback` measures *fallbacks*, not *violations*, so it was
+blind to bug 1's sanitize-path defeat by construction, and blind to bug 2's leak entirely (a leak
+via the fallback still counts as a successful fallback). The raw pattern cross-check was the only
+signal that caught either bug — the reason the harness treats it as the trustworthy one.
+
+### Status
+
+Both `no_leakage` metric readings across every run in this document (1.000 flat) measure *full
+solution* leakage via `ragas_evaluator`, a different check entirely — they were never affected by
+either bug. The HR-schema numbers reported earlier in §4 (27, then 17, leaks) describe the system
+**before** the respective fix in each case. A third full ablation run would be needed to report a
+post-both-fixes leak count; not run here, since Study 2's null result on `judge_quality` makes it
+unlikely to change that comparison, and the safety fix is independently verified above by direct
+inspection rather than by re-running the full paid ablation a third time.
 
 ## 6. Study 4 — Human validation
 
@@ -385,5 +434,6 @@ benefit.
 | 2 | Exact-page recall is low (0.167) while deck-level recall is high (0.889) — near-duplicate slides | Reported as measurement artifact |
 | 3 | Slide RAG has **no measurable effect on hint quality** (Δ +0.003, CI spans zero) | Null result, reportable |
 | 4 | Slide RAG raises citation rate 0% → 10.8% (CI excludes zero) | Only demonstrated benefit |
-| 5 | 27/360 served hints leak HR-schema names; output guardrail defeated by `guardrails.py:224` | **Fixed**, own commit + regression tests |
-| 6 | Citations were rare (10.8%) because no prompt rule or few-shot example asked for them | **Fixed**, own commit; remaining accuracy bounded by Study 1 retrieval |
+| 5 | 27/360 served hints leak HR-schema names; output guardrail defeated by `guardrails.py:224` | **Fixed** (`c73d366`) |
+| 6 | Citations were rare (10.8%) because no prompt rule or few-shot example asked for them | **Fixed** (`3575e36`); remaining accuracy bounded by Study 1 retrieval |
+| 7 | Bug 5's fix exposed a second leak source: 17/360 still leaked via `generate_sql_hint`'s own unguarded second LLM call, independent of slide RAG (present even in `no_rag`) | **Fixed** (`25e38aa`), verified live; population re-count not re-run |
