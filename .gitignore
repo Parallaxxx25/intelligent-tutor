@@ -75,5 +75,6 @@ slide-material/
 # Slide-RAG evaluation outputs (regenerate with backend/evaluation/run_slide_ablation.py)
 # NOTE: backend/evaluation/data/slide_rag_eval.csv is the input dataset and stays tracked.
 slide_ablation.csv
+slide_ablation_report.md
 human_rating_sheet.csv
 human_rating_key.csv
