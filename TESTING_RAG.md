@@ -419,7 +419,9 @@ benefit.
 
 - 19/19 metric unit tests pass — hand-built rankings with known Recall/MRR/nDCG values, a constant
   input whose bootstrap CI must bracket the constant, and a perfectly-ranked pair whose ρ must be 1.
-- 65/65 regression tests pass (`test_slide_rag.py`, `test_guardrails.py`) after the production edit.
+- 67/67 regression tests pass (`test_slide_rag.py`, `test_guardrails.py`) after the production edit —
+  includes the 2 new tests (`test_unsanitizable_violation_offers_no_sanitized_content`,
+  `test_clean_response_offers_no_sanitized_content`) the fix itself adds.
 - Gold labels verified page-by-page: every `lab:page` resolves to a real extracted slide, titles
   cross-checked against each sample's error.
 - Study 1 run to completion; the sanity gate passes.
